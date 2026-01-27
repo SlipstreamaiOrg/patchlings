@@ -107,12 +107,15 @@ export function validateTelemetryEventV1(input: unknown): TelemetryValidationRes
   }
 
   const seq = input.seq;
-  if (!Number.isInteger(seq) || seq < 0) {
+  if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) {
     errors.push("seq must be a non-negative integer");
   }
 
   const upstreamSeq = input.upstream_seq;
-  if (upstreamSeq !== undefined && (!Number.isInteger(upstreamSeq) || upstreamSeq < 0)) {
+  if (
+    upstreamSeq !== undefined &&
+    (typeof upstreamSeq !== "number" || !Number.isInteger(upstreamSeq) || upstreamSeq < 0)
+  ) {
     errors.push("upstream_seq must be a non-negative integer when provided");
   }
 

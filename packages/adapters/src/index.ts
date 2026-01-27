@@ -525,6 +525,7 @@ function normalizeInputEvent(
   const ts = coerceTs(raw);
   const severity = deriveSeverity(raw);
   const attrs = sanitizeAttrs(raw, runSalt);
+  const allowContent = context.allowContent === true;
 
   const candidate: TelemetryEventV1 = {
     v: 1,
@@ -539,7 +540,7 @@ function normalizeInputEvent(
   };
 
   const redacted = redactEvent(candidate, runSalt, {
-    allowContent: context.allowContent,
+    allowContent,
     stableSalt: context.workspaceSalt
   });
 
@@ -563,6 +564,7 @@ function makeAdapterErrorEvent(
 ): TelemetryEventV1 {
   const runSalt = resolveRunSalt(context, context.runId);
   const seq = seqSynth.next(context.runId);
+  const allowContent = context.allowContent === true;
   const candidate: TelemetryEventV1 = {
     v: 1,
     run_id: context.runId,
@@ -575,7 +577,7 @@ function makeAdapterErrorEvent(
     ...(options.attrs ? { attrs: options.attrs } : {})
   };
   return redactEvent(candidate, runSalt, {
-    allowContent: context.allowContent,
+    allowContent,
     stableSalt: context.workspaceSalt
   });
 }
@@ -587,6 +589,7 @@ function makeUnparsedLineEvent(
 ): TelemetryEventV1 {
   const runSalt = resolveRunSalt(context, context.runId);
   const seq = seqSynth.next(context.runId);
+  const allowContent = context.allowContent === true;
   const attrs: TelemetryAttrs = {
     line_hash: hashWithSalt(line, runSalt)
   };
@@ -602,7 +605,7 @@ function makeUnparsedLineEvent(
     attrs
   };
   return redactEvent(candidate, runSalt, {
-    allowContent: context.allowContent,
+    allowContent,
     stableSalt: context.workspaceSalt
   });
 }
@@ -655,6 +658,7 @@ export async function codexJsonlAdapter(options: CodexAdapterOptions): Promise<A
 
   const command = options.codexCommand ?? "codex";
   const args = ["exec", "--json", prompt];
+  const processOptions = options.cwd ? { command, args, cwd: options.cwd } : { command, args };
 
   const processHandle = await readLinesFromProcess(
     (line) => {
@@ -669,7 +673,7 @@ export async function codexJsonlAdapter(options: CodexAdapterOptions): Promise<A
         queue.push(makeUnparsedLineEvent(context, seqSynth, line));
       }
     },
-    { command, args, cwd: options.cwd }
+    processOptions
   );
 
   processHandle.child.on("exit", () => {

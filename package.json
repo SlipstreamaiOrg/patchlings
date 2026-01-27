@@ -19,7 +19,7 @@
     "replay": "pnpm --filter @patchlings/runner replay --",
     "export-story": "pnpm --filter @patchlings/runner export-story --",
     "build": "pnpm -r build",
-    "test": "pnpm -r test",
+    "test": "pnpm -r build && pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint"
   },

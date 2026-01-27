@@ -14,6 +14,9 @@
     "@patchlings/storytime": "workspace:*",
     "ws": "^8.18.0"
   },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
+  },
   "scripts": {
     "dev": "tsx src/cli.ts dev",
     "demo": "tsx src/cli.ts demo",
@@ -22,7 +25,7 @@
     "export-story": "tsx src/cli.ts export-story",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "lint": "echo \"No lint configured for @patchlings/runner\""
   }
 }

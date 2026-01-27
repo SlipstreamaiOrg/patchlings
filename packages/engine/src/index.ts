@@ -203,7 +203,7 @@ function makeWorld(workspaceId: string): WorldState {
   };
 }
 
-function normalizeRunState(run: RunState | (RunState & { last_seq?: number })): RunState {
+function normalizeRunState(run: RunState & { last_seq?: number }): RunState {
   const lastSeq = typeof run.last_seq === "number" ? run.last_seq : -1;
   const lastUpstream = typeof run.last_upstream_seq === "number" ? run.last_upstream_seq : lastSeq;
   const internalSeqCandidate = typeof run.internal_seq === "number" ? run.internal_seq : INTERNAL_SEQ_OFFSET;
@@ -279,10 +279,14 @@ function getPathLikeHashes(attrs: TelemetryAttrs | undefined): { pathId?: string
   const pathId = stablePathKey ? String(attrs[stablePathKey]) : pathKey ? String(attrs[pathKey]) : undefined;
   const regionId = stableDirKey ? String(attrs[stableDirKey]) : dirKey ? String(attrs[dirKey]) : undefined;
 
-  return {
-    pathId,
-    regionId
-  };
+  const result: { pathId?: string; regionId?: string } = {};
+  if (pathId) {
+    result.pathId = pathId;
+  }
+  if (regionId) {
+    result.regionId = regionId;
+  }
+  return result;
 }
 
 function getToolName(event: TelemetryEventV1): string {
@@ -368,7 +372,9 @@ class SaltManager {
   private constructor(salts: SaltsFile, storageMode: "fs" | "memory", saltsPath?: string) {
     this.salts = salts;
     this.storageMode = storageMode;
-    this.saltsPath = saltsPath;
+    if (saltsPath) {
+      this.saltsPath = saltsPath;
+    }
   }
 
   static async create(options: {
@@ -476,10 +482,18 @@ export class PatchlingsEngine {
   }) {
     this.workspaceRoot = params.workspaceRoot;
     this.patchlingsDir = params.patchlingsDir;
-    this.worldPath = params.worldPath;
-    this.chaptersPath = params.chaptersPath;
-    this.recordingsDir = params.recordingsDir;
-    this.storyDir = params.storyDir;
+    if (params.worldPath) {
+      this.worldPath = params.worldPath;
+    }
+    if (params.chaptersPath) {
+      this.chaptersPath = params.chaptersPath;
+    }
+    if (params.recordingsDir) {
+      this.recordingsDir = params.recordingsDir;
+    }
+    if (params.storyDir) {
+      this.storyDir = params.storyDir;
+    }
     this.storageMode = params.storageMode;
     this.salts = params.salts;
     this.world = params.world;
@@ -520,11 +534,10 @@ export class PatchlingsEngine {
       }
     }
 
-    const salts = await SaltManager.create({
-      storageMode,
-      saltsPath,
-      fixedSalts: options.fixedSalts
-    });
+    const saltsOptions = saltsPath
+      ? { storageMode, saltsPath, fixedSalts: options.fixedSalts }
+      : { storageMode, fixedSalts: options.fixedSalts };
+    const salts = await SaltManager.create(saltsOptions);
 
     const workspaceId = salts.getWorkspaceId(workspaceRoot);
 
@@ -536,13 +549,9 @@ export class PatchlingsEngine {
     const chapters = chaptersRaw.map(normalizeChapterSummary);
     const trimmedChapters = chapters.slice(-maxChaptersInMemory);
 
-    const engine = new PatchlingsEngine({
+    const engineParams = {
       workspaceRoot,
       patchlingsDir,
-      worldPath,
-      chaptersPath,
-      recordingsDir,
-      storyDir,
       storageMode,
       salts,
       world,
@@ -550,8 +559,14 @@ export class PatchlingsEngine {
       eventsPerSecondThreshold,
       recordTelemetry,
       maxChaptersInMemory,
-      maxRecordingBytes
-    });
+      maxRecordingBytes,
+      ...(worldPath ? { worldPath } : {}),
+      ...(chaptersPath ? { chaptersPath } : {}),
+      ...(recordingsDir ? { recordingsDir } : {}),
+      ...(storyDir ? { storyDir } : {})
+    };
+
+    const engine = new PatchlingsEngine(engineParams);
 
     await engine.persistWorld();
     await engine.salts.persist();
@@ -972,6 +987,7 @@ export class PatchlingsEngine {
     runState.chapter_count = turnIndex;
 
     const chapterId = `${event.run_id}:${turnIndex}`;
+    const title = this.deriveSafeTitle(event);
     const chapter: ChapterState = {
       run_id: event.run_id,
       chapter_id: chapterId,
@@ -980,7 +996,6 @@ export class PatchlingsEngine {
       started_seq: event.seq,
       last_ts: event.ts,
       last_seq: event.seq,
-      title: this.deriveSafeTitle(event),
       files_touched: new Set(),
       tools_used: new Map(),
       test_pass: 0,
@@ -989,7 +1004,8 @@ export class PatchlingsEngine {
       backpressure_dropped: 0,
       backpressure_summaries: 0,
       peak_events_per_sec: 0,
-      event_count: 1
+      event_count: 1,
+      ...(title ? { title } : {})
     };
 
     this.openChapters.set(event.run_id, chapter);
@@ -1017,7 +1033,6 @@ export class PatchlingsEngine {
       started_seq: event.seq,
       last_ts: event.ts,
       last_seq: event.seq,
-      title: undefined,
       files_touched: new Set(),
       tools_used: new Map(),
       test_pass: 0,
@@ -1205,14 +1220,14 @@ export class PatchlingsEngine {
   private ensureRunState(runId: string, ts: string): RunState {
     const existing = this.world.runs[runId];
     if (existing) {
-      const legacyLastSeq = typeof (existing as { last_seq?: number }).last_seq === "number"
-        ? (existing as { last_seq?: number }).last_seq
-        : -1;
+      const legacyLastSeqValue = (existing as { last_seq?: number }).last_seq;
+      const legacyLastSeq = typeof legacyLastSeqValue === "number" ? legacyLastSeqValue : -1;
       if (typeof existing.last_upstream_seq !== "number") {
         existing.last_upstream_seq = legacyLastSeq;
       }
       if (typeof existing.internal_seq !== "number") {
-        existing.internal_seq = Math.max(existing.event_count, existing.last_upstream_seq, INTERNAL_SEQ_OFFSET);
+        const lastUpstream = typeof existing.last_upstream_seq === "number" ? existing.last_upstream_seq : -1;
+        existing.internal_seq = Math.max(existing.event_count, lastUpstream, INTERNAL_SEQ_OFFSET);
       }
       if (typeof existing.recording_index !== "number") {
         existing.recording_index = 0;

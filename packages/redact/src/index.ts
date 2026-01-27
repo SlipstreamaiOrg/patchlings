@@ -165,10 +165,9 @@ export function redactEvent(event: TelemetryEventV1, salt: string, options: Reda
   const allowContent = options.allowContent ?? DEFAULT_ALLOW_CONTENT;
   const stableSalt = options.stableSalt;
 
-  const attrs = redactAttrs(event.attrs, salt, { allowContent, stableSalt });
+  const redactionOptions: RedactionOptions = stableSalt ? { allowContent, stableSalt } : { allowContent };
+  const attrs = redactAttrs(event.attrs, salt, redactionOptions);
 
-  return {
-    ...event,
-    ...(attrs ? { attrs } : { attrs: undefined })
-  };
+  const { attrs: _attrs, ...rest } = event;
+  return attrs ? { ...rest, attrs } : rest;
 }

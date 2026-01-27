@@ -64,24 +64,34 @@ const BATCH_INTERVAL_MS = 50;
 const BATCH_SIZE = 250;
 const MAX_QUEUE_SIZE = 5000;
 
+function stripLeadingDoubleDash(args: string[]): string[] {
+  let index = 0;
+  while (index < args.length && args[index] === "--") {
+    index += 1;
+  }
+  return args.slice(index);
+}
+
 function parseCommand(argv: string[]): RunnerOptions {
   const [, , rawCommand, ...rest] = argv;
   const command = (rawCommand ?? "demo") as RunnerCommand;
   const port = Number(process.env.PATCHLINGS_PORT ?? DEFAULT_PORT);
 
   if (command === "run") {
-    const promptArgs = rest[0] === "--" ? rest.slice(1) : rest;
+    const promptArgs = stripLeadingDoubleDash(rest);
     const prompt = promptArgs.join(" ").trim();
     return { command, prompt, port };
   }
 
   if (command === "replay") {
-    return { command, replayPath: rest[0], port };
+    const replayPath = rest[0];
+    return replayPath ? { command, replayPath, port } : { command, port };
   }
 
   if (command === "export-story") {
-    const exportArgs = rest[0] === "--" ? rest.slice(1) : rest;
-    return { command, exportRunId: exportArgs[0], port };
+    const exportArgs = stripLeadingDoubleDash(rest);
+    const exportRunId = exportArgs[0];
+    return exportRunId ? { command, exportRunId, port } : { command, port };
   }
 
   return { command, port };
@@ -145,6 +155,23 @@ async function pathExists(targetPath: string): Promise<boolean> {
     return true;
   } catch (error) {
     return false;
+  }
+}
+
+async function findWorkspaceRoot(startDir: string): Promise<string> {
+  let current = path.resolve(startDir);
+
+  while (true) {
+    const marker = path.join(current, "pnpm-workspace.yaml");
+    if (await pathExists(marker)) {
+      return current;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return path.resolve(startDir);
+    }
+    current = parent;
   }
 }
 
@@ -262,7 +289,8 @@ function trimQueue(queue: TelemetryEventV1[]): number {
   let dropped = 0;
 
   for (let i = queue.length - 1; i >= 0 && queue.length > MAX_QUEUE_SIZE; i -= 1) {
-    if (!isLowValueEvent(queue[i])) {
+    const candidate = queue[i];
+    if (!candidate || !isLowValueEvent(candidate)) {
       continue;
     }
     queue.splice(i, 1);
@@ -277,13 +305,14 @@ function trimQueue(queue: TelemetryEventV1[]): number {
   return dropped;
 }
 
-function startViewerDevServer(): { child: ReturnType<typeof spawn>; url: string } {
+function startViewerDevServer(workspaceRoot: string): { child: ReturnType<typeof spawn>; url: string } {
   const url = `http://localhost:${VIEWER_DEV_PORT}`;
   const child = spawn(
     "pnpm",
     ["--filter", "@patchlings/viewer", "dev", "--", "--host", "--port", String(VIEWER_DEV_PORT)],
     {
       stdio: "ignore",
+      cwd: workspaceRoot,
       shell: true
     }
   );
@@ -349,7 +378,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const workspaceRoot = process.cwd();
+  const workspaceRoot = await findWorkspaceRoot(process.cwd());
   const engine = await PatchlingsEngine.create({ workspaceRoot });
 
   if (options.command === "export-story") {
@@ -378,7 +407,7 @@ async function main(): Promise<void> {
 
   let viewerDev: { child: ReturnType<typeof spawn>; url: string } | undefined;
   if (!hasViewerDist) {
-    viewerDev = startViewerDevServer();
+    viewerDev = startViewerDevServer(workspaceRoot);
   }
 
   const viewerUrl = hasViewerDist ? `http://localhost:${options.port}` : viewerDev?.url ?? `http://localhost:${VIEWER_DEV_PORT}`;
@@ -432,12 +461,12 @@ async function main(): Promise<void> {
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
       wss.emit("connection", ws, req);
     });
   });
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws: WebSocket) => {
     clients.add(ws);
     const snapshot: StreamMessage = {
       type: "snapshot",
