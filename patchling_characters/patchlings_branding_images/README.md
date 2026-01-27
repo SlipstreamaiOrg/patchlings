@@ -1,6 +1,6 @@
 # Patchlings Branding + Character Assets (Canonical)
 
-This folder is the canonical source of truth for Patchlings character assets. Codex and contributors should look here first for 2D animation assets used by the PixiJS Universe viewer.
+Codex looks here for ALL Patchlings 2D animation + character assets used by the PixiJS Universe viewer.
 
 Scope:
 - Patchlings branding images (logos, marks, variants)
@@ -32,17 +32,13 @@ Allowed values:
 - dirs: `S` | `E` | `N` | `W`
 - sizes: `256` | `128` | `64`
 
-Important loader note:
-- The current viewer probes lowercase direction tokens and two-digit frame numbers.
-- Example the loader expects: `patchling_idle_s_01_128.png`
-
 ### Sprite Sheets
 
 Sheets live under:
 - `sprites_v1/sheets/`
 
 Filename convention:
-- `patchling_<action>_sheet_128.png`
+- `patchling_<action>_sheet_128.png` (and `_64` optional)
 
 Layout convention:
 - rows = `S, E, N, W` (in that order)
@@ -62,7 +58,7 @@ When assets are missing, the viewer prints exact expected paths in the browser c
 ## DO NOT
 
 - Do not rename `patchling_characters/patchlings_branding_images/`.
-- Do not change naming conventions without updating the loader in `apps/viewer/src/colony/assets.ts`.
+- Do not change naming conventions without updating the loader in `apps/viewer/src/colony/assets.ts` and this README.
 - Do not place raw prompt/tool output or sensitive telemetry here.
 
 ## Quick Test
@@ -75,8 +71,9 @@ npx pnpm@9.12.0 demo
 
 2. Open the viewer (see terminal output for the URL).
 3. In the browser console:
-- You should not see sprite-missing warnings.
-- A success signal (if present) should look like: `Loaded Patchlings sprites v1`.
+- You should see one of the following logs:
+  - `Loaded Patchlings sprites v1 from <path>`
+  - `Placeholder mode: missing sprites`
 
 If you see warnings about missing sheets or frames, check:
 - `patchling_characters/patchlings_branding_images/sprites_v1/sheets/`

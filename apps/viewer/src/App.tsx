@@ -3,7 +3,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { explainEvents } from "@patchlings/learnlings";
 
 import { usePatchlingsStream } from "./usePatchlingsStream";
-import type { ViewerState } from "./types";
+import type { SpriteStatus, ViewerState } from "./types";
 import { UniverseCanvas } from "./UniverseCanvas";
 
 function sortChaptersForTimeline(chapters: ViewerState["chapters"]): ViewerState["chapters"] {
@@ -65,6 +65,10 @@ export function App(): JSX.Element {
   const noticeTimerRef = useRef<number | null>(null);
 
   const assetBase = (import.meta.env.VITE_PATCHLINGS_ASSET_BASE as string | undefined) ?? "/patchlings-assets";
+  const [spriteStatus, setSpriteStatus] = useState<SpriteStatus>({
+    mode: "placeholder",
+    assetBase
+  });
 
   const timelineChapters = useMemo(() => sortChaptersForTimeline(state.chapters), [state.chapters]);
   const lastTurnIndex = timelineChapters[0]?.turn_index ?? null;
@@ -73,6 +77,7 @@ export function App(): JSX.Element {
     [state.recentEvents]
   );
   const eventsPerSecond = useMemo(() => computeEventsPerSecond(state.recentEvents), [state.recentEvents]);
+  const spriteLabel = spriteStatus.mode === "sprites" ? "Sprites: Loaded" : "Sprites: Placeholder";
 
   const handleChapterSaved = useCallback((runId: string) => {
     if (noticeTimerRef.current) {
@@ -85,6 +90,10 @@ export function App(): JSX.Element {
       noticeTimerRef.current = null;
     }, 2000);
   }, [lastTurnIndex]);
+
+  const handleSpriteStatus = useCallback((status: SpriteStatus) => {
+    setSpriteStatus(status);
+  }, []);
 
   const handleExportStory = async () => {
     if (exporting) {
@@ -130,6 +139,13 @@ export function App(): JSX.Element {
 
           <div className="metric-pill">{eventsPerSecond.toFixed(1)} ev/s</div>
           <div className="metric-pill">Turn {lastTurnIndex ?? "—"}</div>
+          <div
+            className={`metric-pill ${
+              spriteStatus.mode === "sprites" ? "metric-pill--ok" : "metric-pill--warn"
+            }`}
+          >
+            {spriteLabel}
+          </div>
 
           <label className="toggle">
             <input
@@ -167,6 +183,7 @@ export function App(): JSX.Element {
             followHotspot={followHotspotEnabled}
             assetBase={assetBase}
             onChapterSaved={handleChapterSaved}
+            onSpriteStatus={handleSpriteStatus}
           />
 
           {chapterNotice ? <div className="chapter-notice">{chapterNotice}</div> : null}

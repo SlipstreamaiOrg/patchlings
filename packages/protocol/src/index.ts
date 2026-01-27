@@ -1,4 +1,5 @@
 export const TELEMETRY_VERSION = 1 as const;
+export const DEFAULT_PATCHLINGS_ASSET_ROOT = "patchling_characters/patchlings_branding_images";
 
 export type TelemetryKind =
   | "turn"

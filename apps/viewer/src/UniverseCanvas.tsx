@@ -3,7 +3,7 @@ import { useEffect, useRef } from "react";
 import type { ChapterSummary, WorldState } from "@patchlings/engine";
 import type { TelemetryEventV1 } from "@patchlings/protocol";
 
-import type { RunStatus } from "./types";
+import type { RunStatus, SpriteStatus } from "./types";
 import { ColonySimulation } from "./colony/simulation";
 
 interface UniverseCanvasProps {
@@ -16,6 +16,7 @@ interface UniverseCanvasProps {
   followHotspot: boolean;
   assetBase: string;
   onChapterSaved?: (runId: string) => void;
+  onSpriteStatus?: (status: SpriteStatus) => void;
 }
 
 export function UniverseCanvas(props: UniverseCanvasProps): JSX.Element {
@@ -27,11 +28,12 @@ export function UniverseCanvas(props: UniverseCanvasProps): JSX.Element {
     if (!host) {
       return;
     }
-    const options = props.onChapterSaved
+    const options = props.onChapterSaved || props.onSpriteStatus
       ? {
           assetBase: props.assetBase,
           followHotspot: props.followHotspot,
-          onChapterSaved: props.onChapterSaved
+          ...(props.onChapterSaved ? { onChapterSaved: props.onChapterSaved } : {}),
+          ...(props.onSpriteStatus ? { onSpriteStatus: props.onSpriteStatus } : {})
         }
       : {
           assetBase: props.assetBase,

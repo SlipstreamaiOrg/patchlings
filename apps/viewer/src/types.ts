@@ -10,6 +10,13 @@ export interface StreamStats {
   queueSize: number;
 }
 
+export type SpriteMode = "sprites" | "placeholder";
+
+export interface SpriteStatus {
+  mode: SpriteMode;
+  assetBase: string;
+}
+
 export type StreamMessage =
   | {
       type: "snapshot";

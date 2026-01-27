@@ -1,5 +1,7 @@
 import { Assets, Rectangle, Texture } from "pixi.js";
 
+import { DEFAULT_PATCHLINGS_ASSET_ROOT } from "@patchlings/protocol";
+
 export type PatchlingAction = "idle" | "walk" | "carry";
 export type PatchlingDir = "N" | "E" | "S" | "W";
 
@@ -19,11 +21,11 @@ export interface PatchlingSpriteOptions {
 
 const ACTIONS: PatchlingAction[] = ["idle", "walk", "carry"];
 const DIRECTIONS: PatchlingDir[] = ["S", "E", "N", "W"];
-const DIR_TO_TOKEN: Record<PatchlingDir, string> = {
-  S: "s",
-  E: "e",
-  N: "n",
-  W: "w"
+const DIR_TOKENS: Record<PatchlingDir, string[]> = {
+  S: ["S", "s"],
+  E: ["E", "e"],
+  N: ["N", "n"],
+  W: ["W", "w"]
 };
 const ROW_BY_DIR: Record<PatchlingDir, number> = {
   S: 0,
@@ -80,11 +82,58 @@ function placeholderAnimations(): Record<PatchlingAction, Record<PatchlingDir, T
 function warningsForMissingAssets(assetBase: string): string[] {
   const base = normalizeAssetBase(assetBase);
   return [
-    "[patchlings/viewer] Sprite assets not found. Falling back to placeholder circles.",
+    "[patchlings/viewer] Patchlings sprites missing; running placeholder mode.",
+    "[patchlings/viewer] Placeholder mode: missing sprites.",
     `[patchlings/viewer] Expected sheets under: ${base}/sprites_v1/sheets/`,
     `[patchlings/viewer] Expected frames under: ${base}/sprites_v1/sprites/`,
-    "[patchlings/viewer] Canonical repo asset root: patchling_characters/patchlings_branding_images/"
+    `[patchlings/viewer] Canonical repo asset root: ${DEFAULT_PATCHLINGS_ASSET_ROOT}/`
   ];
+}
+
+function frameToken(frameIndex: number): string {
+  return String(frameIndex).padStart(2, "0");
+}
+
+function frameUrlCandidates(
+  assetBase: string,
+  action: PatchlingAction,
+  dir: PatchlingDir,
+  frameIndex: number,
+  size: number
+): string[] {
+  const urls: string[] = [];
+  const dirTokens = DIR_TOKENS[dir];
+  const token = frameToken(frameIndex);
+  for (const dirToken of dirTokens) {
+    urls.push(
+      assetUrl(
+        assetBase,
+        `sprites_v1/sprites/patchling_${action}_${dirToken}_${token}_${size}.png`
+      )
+    );
+  }
+  return urls;
+}
+
+async function detectFrameStartIndex(assetBase: string, size: number): Promise<number | null> {
+  const dirTokens = DIR_TOKENS.S;
+  const zeroCandidates = dirTokens.map((dirToken) =>
+    assetUrl(assetBase, `sprites_v1/sprites/patchling_idle_${dirToken}_00_${size}.png`)
+  );
+  const zeroChecks = await Promise.all(zeroCandidates.map((url) => assetExists(url)));
+  if (zeroChecks.some(Boolean)) {
+    return 0;
+  }
+
+  const oneCandidates = dirTokens.map((dirToken) =>
+    assetUrl(assetBase, `sprites_v1/sprites/patchling_idle_${dirToken}_01_${size}.png`)
+  );
+  const oneChecks = await Promise.all(oneCandidates.map((url) => assetExists(url)));
+  if (oneChecks.some(Boolean)) {
+    return 1;
+  }
+
+  return null;
 }
 
 function sliceSheetTextures(texture: Texture, size: number): Record<PatchlingDir, Texture[]> | null {
@@ -151,11 +200,8 @@ async function loadFrameAnimations(
   size: number,
   frameCount: number
 ): Promise<Record<PatchlingAction, Record<PatchlingDir, Texture[]>> | null> {
-  const probeUrl = assetUrl(
-    assetBase,
-    `sprites_v1/sprites/patchling_idle_s_01_${size}.png`
-  );
-  if (!(await assetExists(probeUrl))) {
+  const startIndex = await detectFrameStartIndex(assetBase, size);
+  if (startIndex === null) {
     return null;
   }
 
@@ -164,19 +210,22 @@ async function loadFrameAnimations(
   for (const action of ACTIONS) {
     const perDir = {} as Record<PatchlingDir, Texture[]>;
     for (const dir of DIRECTIONS) {
-      const token = DIR_TO_TOKEN[dir];
       const textures: Texture[] = [];
-      for (let frameIndex = 1; frameIndex <= frameCount; frameIndex += 1) {
-        const frameToken = String(frameIndex).padStart(2, "0");
-        const url = assetUrl(
-          assetBase,
-          `sprites_v1/sprites/patchling_${action}_${token}_${frameToken}_${size}.png`
-        );
-        try {
-          const texture = (await Assets.load(url)) as Texture;
-          textures.push(texture);
-        } catch (error) {
-          // Ignore missing frames; we will fall back to any available frames.
+      for (let frameIndex = startIndex; frameIndex < startIndex + frameCount; frameIndex += 1) {
+        const candidates = frameUrlCandidates(assetBase, action, dir, frameIndex, size);
+        let loaded = false;
+        for (const url of candidates) {
+          try {
+            const texture = (await Assets.load(url)) as Texture;
+            textures.push(texture);
+            loaded = true;
+            break;
+          } catch (error) {
+            // Ignore missing frames; we will fall back to any available frames.
+          }
+        }
+        if (!loaded) {
+          continue;
         }
       }
       perDir[dir] = textures.length > 0 ? textures : [Texture.WHITE];
@@ -202,6 +251,7 @@ export async function loadPatchlingSprites(
 
   const fromSheets = await loadSheetAnimations(assetBase, size);
   if (fromSheets) {
+    console.info(`[patchlings/viewer] Loaded Patchlings sprites v1 from ${assetBase}`);
     return {
       mode: "sprites",
       size,
@@ -213,6 +263,7 @@ export async function loadPatchlingSprites(
 
   const fromFrames = await loadFrameAnimations(assetBase, size, frameCount);
   if (fromFrames) {
+    console.info(`[patchlings/viewer] Loaded Patchlings sprites v1 from ${assetBase}`);
     return {
       mode: "sprites",
       size,
