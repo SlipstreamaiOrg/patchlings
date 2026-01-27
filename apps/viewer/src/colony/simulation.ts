@@ -5,6 +5,7 @@ import type { TelemetryEventV1 } from "@patchlings/protocol";
 
 import { loadPatchlingSprites, type PatchlingAction, type PatchlingDir, type PatchlingSpriteSet } from "./assets";
 import { mapEventToJobSeed, type JobSeed, type JobType, type StationId } from "./jobs";
+import type { SpriteStatus } from "../types";
 
 export type RunStatus = "idle" | "running" | "completed" | "failed";
 
@@ -12,6 +13,7 @@ export interface ColonySimulationOptions {
   assetBase: string;
   followHotspot: boolean;
   onChapterSaved?: (runId: string) => void;
+  onSpriteStatus?: (status: SpriteStatus) => void;
 }
 
 interface Layers {
@@ -243,6 +245,8 @@ export class ColonySimulation {
 
   private onChapterSaved?: (runId: string) => void;
 
+  private onSpriteStatus?: (status: SpriteStatus) => void;
+
   private runStatus: RunStatus = "idle";
 
   private runId = "pending";
@@ -321,6 +325,9 @@ export class ColonySimulation {
     if (options.onChapterSaved) {
       this.onChapterSaved = options.onChapterSaved;
     }
+    if (options.onSpriteStatus) {
+      this.onSpriteStatus = options.onSpriteStatus;
+    }
 
     this.camera = {
       x: INITIAL_CAMERA.x,
@@ -391,6 +398,12 @@ export class ColonySimulation {
   async setAssetBase(assetBase: string): Promise<void> {
     this.sprites = await loadPatchlingSprites({ assetBase });
     this.refreshAgentSprites();
+    if (this.sprites) {
+      this.onSpriteStatus?.({
+        mode: this.sprites.mode,
+        assetBase: this.sprites.assetBase
+      });
+    }
   }
 
   ingestWorld(world: WorldState | null): void {

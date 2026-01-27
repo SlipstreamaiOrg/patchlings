@@ -37,7 +37,7 @@ Place Patchling sprites under:
 
 - `patchling_characters/patchlings_branding_images/`
 
-The runner serves them at `/patchlings-assets` by default. Override with `PATCHLINGS_ASSETS_DIR` (runner) or `VITE_PATCHLINGS_ASSET_BASE` (viewer). If assets are missing, the viewer falls back to placeholder Patchlings.
+The runner serves them at `/patchlings-assets` by default. Override with `PATCHLINGS_ASSET_ROOT` (runner) or `VITE_PATCHLINGS_ASSET_BASE` (viewer). If assets are missing, the viewer falls back to placeholder Patchlings.
 
 ## Replay A Recording
 

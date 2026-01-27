@@ -52,8 +52,22 @@ If assets are missing, the viewer falls back to simple placeholder Patchlings an
 
 Overrides:
 
-- Runner asset root: `PATCHLINGS_ASSETS_DIR`
+- Runner asset root: `PATCHLINGS_ASSET_ROOT`
 - Viewer asset base URL: `VITE_PATCHLINGS_ASSET_BASE` (default `/patchlings-assets`)
+
+### Asset Doctor
+
+Run a quick sanity check:
+
+```bash
+npx pnpm@9.12.0 --filter @patchlings/runner assets doctor
+```
+
+If the `patchlings` CLI is installed:
+
+```bash
+patchlings assets doctor
+```
 
 ## 4) Codex CLI Integration
 
@@ -92,6 +106,6 @@ Output:
 ## Useful Environment Variables
 
 - `PATCHLINGS_PORT`: runner HTTP/WS port (default `4317`)
-- `PATCHLINGS_ASSETS_DIR`: override the canonical asset root
+- `PATCHLINGS_ASSET_ROOT`: override the canonical asset root
 - `VITE_PATCHLINGS_ASSET_BASE`: override the viewer asset base URL
 - `PATCHLINGS_ALLOW_CONTENT`: opt into raw content display/storage (default `false`)
