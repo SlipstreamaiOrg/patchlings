@@ -125,15 +125,15 @@ export function redactAttrs(
       continue;
     }
 
-    if (!allowContent && isContentKey(key)) {
-      continue;
-    }
-
     if (isHashedKey(key)) {
       const hashedValue = asAttrValue(value);
       if (hashedValue !== undefined) {
         redacted[key] = hashedValue;
       }
+      continue;
+    }
+
+    if (!allowContent && isContentKey(key)) {
       continue;
     }
 

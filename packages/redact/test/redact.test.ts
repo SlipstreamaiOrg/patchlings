@@ -66,6 +66,19 @@ describe("redaction", () => {
     expect(redacted?.path_dir_hash).toBe("def456");
   });
 
+  it("preserves hashed content metadata while dropping raw content", () => {
+    const redacted = redactAttrs(
+      {
+        prompt: "never show this",
+        prompt_hash: "hash-1"
+      },
+      "salt-5"
+    );
+
+    expect(redacted?.prompt).toBeUndefined();
+    expect(redacted?.prompt_hash).toBe("hash-1");
+  });
+
   it("supports a stable workspace salt for persistent IDs", () => {
     const stableSalt = "workspace-salt";
     const runA = redactAttrs(

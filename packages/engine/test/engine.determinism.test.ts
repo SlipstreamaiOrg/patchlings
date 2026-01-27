@@ -85,5 +85,6 @@ describe("PatchlingsEngine determinism", () => {
 
     expect(chaptersA).toEqual(chaptersB);
     expect(chaptersA[0]?.backpressure.dropped_low_value).toBeGreaterThan(0);
+    expect(chaptersA[0]?.backpressure.summaries_emitted).toBeGreaterThan(0);
   });
 });

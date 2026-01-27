@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import type { TelemetryAttrs, TelemetryEventV1 } from "@patchlings/protocol";
+import type { TelemetryAttrs, TelemetryEventV1, TelemetryKind } from "@patchlings/protocol";
 import { redactEvent, createSalt, hashWithSalt } from "@patchlings/redact";
 
 export const WORLD_VERSION = 1 as const;
@@ -30,6 +30,7 @@ export interface ChapterSummary {
     dropped_low_value: number;
     peak_events_per_sec: number;
     threshold: number;
+    summaries_emitted: number;
   };
   title?: string;
 }
@@ -46,8 +47,11 @@ export interface RunState {
   dropped_low_value_events: number;
   duplicate_events: number;
   peak_events_per_sec: number;
-  last_seq: number;
+  last_upstream_seq: number;
+  internal_seq: number;
   last_ts: string;
+  recording_index: number;
+  recording_bytes: number;
 }
 
 export interface RegionState {
@@ -77,6 +81,7 @@ export interface WorldCounters {
   chapters: number;
   dropped_low_value_events: number;
   duplicate_events: number;
+  backpressure_summaries: number;
 }
 
 export interface WorldState {
@@ -98,6 +103,7 @@ export interface EngineOptions {
   recordTelemetry?: boolean;
   storageMode?: "fs" | "memory";
   maxChaptersInMemory?: number;
+  maxRecordingBytes?: number;
   fixedSalts?: {
     workspaceSalt?: string;
     runSalts?: Record<string, string>;
@@ -137,6 +143,7 @@ interface ChapterState {
   test_fail: number;
   errors: number;
   backpressure_dropped: number;
+  backpressure_summaries: number;
   peak_events_per_sec: number;
   event_count: number;
 }
@@ -146,9 +153,20 @@ interface BackpressureState {
   count: number;
 }
 
+interface AggregateBucket {
+  run_id: string;
+  second: number;
+  kind: TelemetryKind;
+  name: string;
+  count: number;
+  last_ts: string;
+}
+
 const DEFAULT_PATCHLINGS_DIR = ".patchlings";
 const DEFAULT_THRESHOLD = 120;
 const DEFAULT_MAX_CHAPTERS = 500;
+const DEFAULT_MAX_RECORDING_BYTES = 2_000_000;
+const INTERNAL_SEQ_OFFSET = 1_000_000_000;
 
 function toIsoString(input: number | Date): string {
   const date = typeof input === "number" ? new Date(input) : input;
@@ -158,6 +176,10 @@ function toIsoString(input: number | Date): string {
 function parseTs(ts: string): number {
   const value = Date.parse(ts);
   return Number.isNaN(value) ? 0 : value;
+}
+
+function tsToSecond(ts: string): number {
+  return Math.floor(parseTs(ts) / 1000);
 }
 
 function makeWorld(workspaceId: string): WorldState {
@@ -171,12 +193,71 @@ function makeWorld(workspaceId: string): WorldState {
       events: 0,
       chapters: 0,
       dropped_low_value_events: 0,
-      duplicate_events: 0
+      duplicate_events: 0,
+      backpressure_summaries: 0
     },
     runs: {},
     regions: {},
     files: {},
     patchlings: {}
+  };
+}
+
+function normalizeRunState(run: RunState | (RunState & { last_seq?: number })): RunState {
+  const lastSeq = typeof run.last_seq === "number" ? run.last_seq : -1;
+  const lastUpstream = typeof run.last_upstream_seq === "number" ? run.last_upstream_seq : lastSeq;
+  const internalSeqCandidate = typeof run.internal_seq === "number" ? run.internal_seq : INTERNAL_SEQ_OFFSET;
+  const internalSeq = internalSeqCandidate < INTERNAL_SEQ_OFFSET ? INTERNAL_SEQ_OFFSET : internalSeqCandidate;
+
+  return {
+    ...run,
+    last_upstream_seq: lastUpstream,
+    internal_seq: internalSeq,
+    recording_index: typeof run.recording_index === "number" ? run.recording_index : 0,
+    recording_bytes: typeof run.recording_bytes === "number" ? run.recording_bytes : 0
+  };
+}
+
+function normalizeWorld(world: WorldState | undefined, workspaceId: string): WorldState {
+  if (!world || world.v !== WORLD_VERSION) {
+    return makeWorld(workspaceId);
+  }
+
+  return {
+    ...world,
+    workspace_id: workspaceId,
+    counters: {
+      events: world.counters?.events ?? 0,
+      chapters: world.counters?.chapters ?? 0,
+      dropped_low_value_events: world.counters?.dropped_low_value_events ?? 0,
+      duplicate_events: world.counters?.duplicate_events ?? 0,
+      backpressure_summaries: world.counters?.backpressure_summaries ?? 0
+    },
+    runs: Object.fromEntries(
+      Object.entries(world.runs ?? {}).map(([runId, run]) => [runId, normalizeRunState(run)])
+    ),
+    regions: world.regions ?? {},
+    files: world.files ?? {},
+    patchlings: world.patchlings ?? {}
+  };
+}
+
+function normalizeChapterSummary(summary: ChapterSummary): ChapterSummary {
+  const backpressure = summary.backpressure ?? {
+    dropped_low_value: 0,
+    peak_events_per_sec: 0,
+    threshold: DEFAULT_THRESHOLD,
+    summaries_emitted: 0
+  };
+
+  return {
+    ...summary,
+    backpressure: {
+      dropped_low_value: backpressure.dropped_low_value ?? 0,
+      peak_events_per_sec: backpressure.peak_events_per_sec ?? 0,
+      threshold: backpressure.threshold ?? DEFAULT_THRESHOLD,
+      summaries_emitted: backpressure.summaries_emitted ?? 0
+    }
   };
 }
 
@@ -236,6 +317,14 @@ function isLowValueEvent(event: TelemetryEventV1): boolean {
   }
   const name = event.name.toLowerCase();
   return name.includes("progress") || name.includes("delta") || name.includes("heartbeat");
+}
+
+function isInternalEvent(event: TelemetryEventV1): boolean {
+  return event.internal === true || event.attrs?.patchlings_internal === true;
+}
+
+function upstreamSeq(event: TelemetryEventV1): number {
+  return typeof event.upstream_seq === "number" ? event.upstream_seq : event.seq;
 }
 
 async function ensureDir(dirPath: string): Promise<void> {
@@ -355,16 +444,19 @@ export class PatchlingsEngine {
   private worldPath?: string;
   private chaptersPath?: string;
   private recordingsDir?: string;
+  private storyDir?: string;
   private storageMode: "fs" | "memory";
   private salts: SaltManager;
   private world: WorldState;
   private chapters: ChapterSummary[];
   private openChapters: Map<string, ChapterState>;
   private backpressure: Map<string, BackpressureState>;
+  private aggregates: Map<string, Map<string, AggregateBucket>>;
   private pendingWrites: Promise<void>[];
   private eventsPerSecondThreshold: number;
   private recordTelemetry: boolean;
   private maxChaptersInMemory: number;
+  private maxRecordingBytes: number;
 
   private constructor(params: {
     workspaceRoot: string;
@@ -372,6 +464,7 @@ export class PatchlingsEngine {
     worldPath?: string;
     chaptersPath?: string;
     recordingsDir?: string;
+    storyDir?: string;
     storageMode: "fs" | "memory";
     salts: SaltManager;
     world: WorldState;
@@ -379,22 +472,26 @@ export class PatchlingsEngine {
     eventsPerSecondThreshold: number;
     recordTelemetry: boolean;
     maxChaptersInMemory: number;
+    maxRecordingBytes: number;
   }) {
     this.workspaceRoot = params.workspaceRoot;
     this.patchlingsDir = params.patchlingsDir;
     this.worldPath = params.worldPath;
     this.chaptersPath = params.chaptersPath;
     this.recordingsDir = params.recordingsDir;
+    this.storyDir = params.storyDir;
     this.storageMode = params.storageMode;
     this.salts = params.salts;
     this.world = params.world;
     this.chapters = params.chapters;
     this.openChapters = new Map();
     this.backpressure = new Map();
+    this.aggregates = new Map();
     this.pendingWrites = [];
     this.eventsPerSecondThreshold = params.eventsPerSecondThreshold;
     this.recordTelemetry = params.recordTelemetry;
     this.maxChaptersInMemory = params.maxChaptersInMemory;
+    this.maxRecordingBytes = params.maxRecordingBytes;
   }
 
   static async create(options: EngineOptions = {}): Promise<PatchlingsEngine> {
@@ -405,16 +502,21 @@ export class PatchlingsEngine {
     const eventsPerSecondThreshold = options.eventsPerSecondThreshold ?? DEFAULT_THRESHOLD;
     const recordTelemetry = options.recordTelemetry ?? false;
     const maxChaptersInMemory = options.maxChaptersInMemory ?? DEFAULT_MAX_CHAPTERS;
+    const maxRecordingBytes = options.maxRecordingBytes ?? DEFAULT_MAX_RECORDING_BYTES;
 
     const worldPath = storageMode === "fs" ? path.join(patchlingsDir, "world.json") : undefined;
     const chaptersPath = storageMode === "fs" ? path.join(patchlingsDir, "chapters.ndjson") : undefined;
     const recordingsDir = storageMode === "fs" ? path.join(patchlingsDir, "recordings") : undefined;
+    const storyDir = storageMode === "fs" ? path.join(patchlingsDir, "story") : undefined;
     const saltsPath = storageMode === "fs" ? path.join(patchlingsDir, "salts.json") : undefined;
 
     if (storageMode === "fs") {
       await ensureDir(patchlingsDir);
-      if (recordTelemetry && recordingsDir) {
+      if (recordingsDir) {
         await ensureDir(recordingsDir);
+      }
+      if (storyDir) {
+        await ensureDir(storyDir);
       }
     }
 
@@ -426,14 +528,12 @@ export class PatchlingsEngine {
 
     const workspaceId = salts.getWorkspaceId(workspaceRoot);
 
-    let world = storageMode === "fs" && worldPath ? await readJson<WorldState>(worldPath) : undefined;
-    if (!world || world.v !== WORLD_VERSION) {
-      world = makeWorld(workspaceId);
-    } else if (world.workspace_id !== workspaceId) {
-      world.workspace_id = workspaceId;
-    }
+    const existingWorld = storageMode === "fs" && worldPath ? await readJson<WorldState>(worldPath) : undefined;
+    const world = normalizeWorld(existingWorld, workspaceId);
 
-    const chapters = storageMode === "fs" && chaptersPath ? await readNdjson<ChapterSummary>(chaptersPath) : [];
+    const chaptersRaw =
+      storageMode === "fs" && chaptersPath ? await readNdjson<ChapterSummary>(chaptersPath) : [];
+    const chapters = chaptersRaw.map(normalizeChapterSummary);
     const trimmedChapters = chapters.slice(-maxChaptersInMemory);
 
     const engine = new PatchlingsEngine({
@@ -442,13 +542,15 @@ export class PatchlingsEngine {
       worldPath,
       chaptersPath,
       recordingsDir,
+      storyDir,
       storageMode,
       salts,
       world,
       chapters: trimmedChapters,
       eventsPerSecondThreshold,
       recordTelemetry,
-      maxChaptersInMemory
+      maxChaptersInMemory,
+      maxRecordingBytes
     });
 
     await engine.persistWorld();
@@ -468,6 +570,14 @@ export class PatchlingsEngine {
     return this.chapters.slice(-limit);
   }
 
+  getChaptersByRun(runId: string, limit?: number): ChapterSummary[] {
+    const chapters = this.chapters.filter((chapter) => chapter.run_id === runId);
+    if (!limit || limit <= 0) {
+      return chapters;
+    }
+    return chapters.slice(-limit);
+  }
+
   getWorkspaceSalt(): string {
     return this.salts.getWorkspaceSalt();
   }
@@ -480,6 +590,21 @@ export class PatchlingsEngine {
     return this.patchlingsDir;
   }
 
+  getStoryDir(): string | undefined {
+    return this.storyDir;
+  }
+
+  getStoryPath(runId: string): string | undefined {
+    if (!this.storyDir) {
+      return undefined;
+    }
+    return path.join(this.storyDir, `${runId}.md`);
+  }
+
+  getRecordingsDir(): string | undefined {
+    return this.recordingsDir;
+  }
+
   async ingestBatch(events: TelemetryEventV1[]): Promise<EngineIngestResult> {
     const acceptedEvents: TelemetryEventV1[] = [];
     const closedChapters: ChapterSummary[] = [];
@@ -488,14 +613,10 @@ export class PatchlingsEngine {
 
     for (const event of events) {
       const result = this.ingestOne(event);
-      droppedLowValueEvents += result.droppedLowValue ? 1 : 0;
-      droppedDuplicateEvents += result.droppedDuplicate ? 1 : 0;
-      if (result.acceptedEvent) {
-        acceptedEvents.push(result.acceptedEvent);
-      }
-      if (result.closedChapter) {
-        closedChapters.push(result.closedChapter);
-      }
+      acceptedEvents.push(...result.acceptedEvents);
+      closedChapters.push(...result.closedChapters);
+      droppedLowValueEvents += result.droppedLowValueEvents;
+      droppedDuplicateEvents += result.droppedDuplicateEvents;
     }
 
     await this.persistWorld();
@@ -511,86 +632,307 @@ export class PatchlingsEngine {
     };
   }
 
-  private ingestOne(event: TelemetryEventV1): {
-    acceptedEvent?: TelemetryEventV1;
-    closedChapter?: ChapterSummary;
-    droppedLowValue: boolean;
-    droppedDuplicate: boolean;
-  } {
-    const runSalt = this.salts.getRunSalt(event.run_id);
-    const workspaceSalt = this.salts.getWorkspaceSalt();
+  async flushRunAggregates(runId: string): Promise<EngineIngestResult> {
+    const now = toIsoString(Date.now());
+    const runState = this.ensureRunState(runId, this.world.runs[runId]?.last_ts ?? now);
+    const flushedEvents = this.flushAggregatesForRun(runId, Number.POSITIVE_INFINITY, runState);
 
-    const safeEvent = redactEvent(event, runSalt, { stableSalt: workspaceSalt });
+    const acceptedEvents: TelemetryEventV1[] = [];
+    const closedChapters: ChapterSummary[] = [];
 
-    const runState = this.ensureRunState(safeEvent.run_id, safeEvent.ts);
-    const chapter = this.openChapters.get(safeEvent.run_id);
-
-    if (this.shouldDropForBackpressure(safeEvent, runState, chapter)) {
-      return { droppedLowValue: true, droppedDuplicate: false };
+    for (const event of flushedEvents) {
+      const result = this.ingestInternalEvent(event, runState);
+      acceptedEvents.push(...result.acceptedEvents);
+      closedChapters.push(...result.closedChapters);
     }
 
-    if (safeEvent.seq <= runState.last_seq) {
-      runState.duplicate_events += 1;
-      this.world.counters.duplicate_events += 1;
-      return { droppedLowValue: false, droppedDuplicate: true };
-    }
-
-    runState.last_seq = safeEvent.seq;
-    runState.last_ts = safeEvent.ts;
-    runState.event_count += 1;
-    this.world.counters.events += 1;
-    this.world.updated_at = safeEvent.ts;
-
-    const closedChapter = this.reduceEvent(safeEvent);
-
-    if (this.recordTelemetry) {
-      this.pendingWrites.push(this.recordEvent(safeEvent));
-    }
+    await this.persistWorld();
+    await this.salts.persist();
+    await this.flushPendingWrites();
 
     return {
-      acceptedEvent: safeEvent,
-      closedChapter,
-      droppedLowValue: false,
-      droppedDuplicate: false
+      acceptedEvents,
+      closedChapters,
+      droppedLowValueEvents: 0,
+      droppedDuplicateEvents: 0,
+      world: this.world
     };
   }
 
-  private shouldDropForBackpressure(
+  private ingestOne(event: TelemetryEventV1): {
+    acceptedEvents: TelemetryEventV1[];
+    closedChapters: ChapterSummary[];
+    droppedLowValueEvents: number;
+    droppedDuplicateEvents: number;
+  } {
+    if (isInternalEvent(event)) {
+      const runState = this.ensureRunState(event.run_id, event.ts);
+      return this.ingestInternalEvent(event, runState);
+    }
+    return this.ingestExternalEvent(event);
+  }
+
+  private ingestExternalEvent(event: TelemetryEventV1): {
+    acceptedEvents: TelemetryEventV1[];
+    closedChapters: ChapterSummary[];
+    droppedLowValueEvents: number;
+    droppedDuplicateEvents: number;
+  } {
+    const runSalt = this.salts.getRunSalt(event.run_id);
+    const workspaceSalt = this.salts.getWorkspaceSalt();
+    const safeEvent = redactEvent(event, runSalt, { stableSalt: workspaceSalt });
+    const runState = this.ensureRunState(safeEvent.run_id, safeEvent.ts);
+
+    const acceptedEvents: TelemetryEventV1[] = [];
+    const closedChapters: ChapterSummary[] = [];
+    let droppedLowValueEvents = 0;
+    let droppedDuplicateEvents = 0;
+
+    if (isTurnStart(safeEvent) || isTurnEnd(safeEvent).ended) {
+      const boundaryFlush = this.flushAggregatesForRun(
+        safeEvent.run_id,
+        Number.POSITIVE_INFINITY,
+        runState
+      );
+      for (const internalEvent of boundaryFlush) {
+        const result = this.ingestInternalEvent(internalEvent, runState);
+        acceptedEvents.push(...result.acceptedEvents);
+        closedChapters.push(...result.closedChapters);
+      }
+    }
+
+    const backpressureResult = this.applyBackpressure(safeEvent, runState);
+    for (const internalEvent of backpressureResult.flushedEvents) {
+      const result = this.ingestInternalEvent(internalEvent, runState);
+      acceptedEvents.push(...result.acceptedEvents);
+      closedChapters.push(...result.closedChapters);
+    }
+
+    if (backpressureResult.aggregated) {
+      droppedLowValueEvents += 1;
+      return { acceptedEvents, closedChapters, droppedLowValueEvents, droppedDuplicateEvents };
+    }
+
+    const upstream = upstreamSeq(safeEvent);
+    if (upstream <= runState.last_upstream_seq) {
+      runState.duplicate_events += 1;
+      this.world.counters.duplicate_events += 1;
+      droppedDuplicateEvents += 1;
+      return { acceptedEvents, closedChapters, droppedLowValueEvents, droppedDuplicateEvents };
+    }
+
+    runState.last_upstream_seq = upstream;
+    this.bumpInternalSeq(runState, safeEvent.seq);
+
+    const acceptedResult = this.acceptEvent(safeEvent, runState);
+    acceptedEvents.push(...acceptedResult.acceptedEvents);
+    closedChapters.push(...acceptedResult.closedChapters);
+
+    return { acceptedEvents, closedChapters, droppedLowValueEvents, droppedDuplicateEvents };
+  }
+
+  private ingestInternalEvent(
+    event: TelemetryEventV1,
+    runState: RunState
+  ): {
+    acceptedEvents: TelemetryEventV1[];
+    closedChapters: ChapterSummary[];
+    droppedLowValueEvents: number;
+    droppedDuplicateEvents: number;
+  } {
+    this.bumpInternalSeq(runState, event.seq);
+    const acceptedResult = this.acceptEvent(event, runState, { internal: true });
+    return {
+      acceptedEvents: acceptedResult.acceptedEvents,
+      closedChapters: acceptedResult.closedChapters,
+      droppedLowValueEvents: 0,
+      droppedDuplicateEvents: 0
+    };
+  }
+
+  private acceptEvent(
     event: TelemetryEventV1,
     runState: RunState,
-    chapter: ChapterState | undefined
-  ): boolean {
-    const ts = parseTs(event.ts);
-    const second = Math.floor(ts / 1000);
+    _options: { internal?: boolean } = {}
+  ): { acceptedEvents: TelemetryEventV1[]; closedChapters: ChapterSummary[] } {
+    runState.event_count += 1;
+    runState.last_ts = event.ts;
+    this.world.counters.events += 1;
+    this.world.updated_at = event.ts;
 
-    const state = this.backpressure.get(event.run_id) ?? { second: null, count: 0 };
-    if (state.second !== second) {
+    const closedChapter = this.reduceEvent(event);
+
+    if (this.recordTelemetry) {
+      this.pendingWrites.push(this.recordEvent(event, runState));
+    }
+
+    return {
+      acceptedEvents: [event],
+      closedChapters: closedChapter ? [closedChapter] : []
+    };
+  }
+
+  private applyBackpressure(
+    event: TelemetryEventV1,
+    runState: RunState
+  ): { aggregated: boolean; flushedEvents: TelemetryEventV1[] } {
+    if (isInternalEvent(event)) {
+      return { aggregated: false, flushedEvents: [] };
+    }
+
+    const runId = event.run_id;
+    const second = tsToSecond(event.ts);
+    const state = this.backpressure.get(runId) ?? { second: null, count: 0 };
+    const flushedEvents: TelemetryEventV1[] = [];
+
+    if (state.second !== null && state.second !== second) {
+      flushedEvents.push(...this.flushAggregatesForRun(runId, second, runState));
       state.second = second;
       state.count = 0;
     }
 
+    if (state.second === null) {
+      state.second = second;
+    }
+
     state.count += 1;
-    this.backpressure.set(event.run_id, state);
+    this.backpressure.set(runId, state);
 
     runState.peak_events_per_sec = Math.max(runState.peak_events_per_sec, state.count);
+    const chapter = this.openChapters.get(runId);
     if (chapter) {
       chapter.peak_events_per_sec = Math.max(chapter.peak_events_per_sec, state.count);
     }
 
     if (state.count <= this.eventsPerSecondThreshold) {
-      return false;
+      return { aggregated: false, flushedEvents };
     }
 
     if (!isLowValueEvent(event)) {
-      return false;
+      return { aggregated: false, flushedEvents };
     }
+
+    this.aggregateLowValueEvent(event, runState, chapter);
+    return { aggregated: true, flushedEvents };
+  }
+
+  private aggregateLowValueEvent(
+    event: TelemetryEventV1,
+    runState: RunState,
+    chapter: ChapterState | undefined
+  ): void {
+    const runId = event.run_id;
+    const second = tsToSecond(event.ts);
+    const key = `${second}:${event.kind}:${event.name}`;
+
+    const perRun = this.aggregates.get(runId) ?? new Map<string, AggregateBucket>();
+    const bucket = perRun.get(key);
+    if (bucket) {
+      bucket.count += 1;
+      bucket.last_ts = event.ts;
+    } else {
+      perRun.set(key, {
+        run_id: runId,
+        second,
+        kind: event.kind,
+        name: event.name,
+        count: 1,
+        last_ts: event.ts
+      });
+    }
+    this.aggregates.set(runId, perRun);
 
     runState.dropped_low_value_events += 1;
     this.world.counters.dropped_low_value_events += 1;
     if (chapter) {
       chapter.backpressure_dropped += 1;
     }
-    return true;
+  }
+
+  private flushAggregatesForRun(runId: string, uptoSecond: number, runState: RunState): TelemetryEventV1[] {
+    const perRun = this.aggregates.get(runId);
+    if (!perRun || perRun.size === 0) {
+      return [];
+    }
+
+    const buckets = [...perRun.values()]
+      .filter((bucket) => bucket.second < uptoSecond)
+      .sort((a, b) => {
+        if (a.second !== b.second) return a.second - b.second;
+        if (a.kind !== b.kind) return a.kind.localeCompare(b.kind);
+        return a.name.localeCompare(b.name);
+      });
+
+    if (buckets.length === 0) {
+      return [];
+    }
+
+    const runSalt = this.salts.getRunSalt(runId);
+    const workspaceSalt = this.salts.getWorkspaceSalt();
+    const events: TelemetryEventV1[] = [];
+
+    for (const bucket of buckets) {
+      perRun.delete(`${bucket.second}:${bucket.kind}:${bucket.name}`);
+      const internalEvent = this.makeBackpressureSummaryEvent(bucket, runState, runSalt, workspaceSalt);
+      events.push(internalEvent);
+
+      const chapter = this.openChapters.get(runId);
+      if (chapter) {
+        chapter.backpressure_summaries += 1;
+      }
+
+      this.world.counters.backpressure_summaries += 1;
+    }
+
+    if (perRun.size === 0) {
+      this.aggregates.delete(runId);
+    } else {
+      this.aggregates.set(runId, perRun);
+    }
+
+    return events;
+  }
+
+  private makeBackpressureSummaryEvent(
+    bucket: AggregateBucket,
+    runState: RunState,
+    runSalt: string,
+    workspaceSalt: string
+  ): TelemetryEventV1 {
+    const seq = this.nextInternalSeq(runState);
+    const upstream = runState.last_upstream_seq;
+    const candidate: TelemetryEventV1 = {
+      v: 1,
+      run_id: bucket.run_id,
+      seq,
+      ...(upstream >= 0 ? { upstream_seq: upstream } : {}),
+      ts: bucket.last_ts,
+      kind: "metric",
+      name: "metric.backpressure.summary",
+      severity: "info",
+      internal: true,
+      attrs: {
+        patchlings_internal: true,
+        second: bucket.second,
+        source_kind: bucket.kind,
+        source_name: bucket.name,
+        count: bucket.count,
+        threshold: this.eventsPerSecondThreshold
+      }
+    };
+
+    return redactEvent(candidate, runSalt, { stableSalt: workspaceSalt });
+  }
+
+  private bumpInternalSeq(runState: RunState, seq: number): void {
+    if (seq > runState.internal_seq) {
+      runState.internal_seq = seq;
+    }
+  }
+
+  private nextInternalSeq(runState: RunState): number {
+    runState.internal_seq += 1;
+    return runState.internal_seq;
   }
 
   private reduceEvent(event: TelemetryEventV1): ChapterSummary | undefined {
@@ -645,6 +987,7 @@ export class PatchlingsEngine {
       test_fail: 0,
       errors: 0,
       backpressure_dropped: 0,
+      backpressure_summaries: 0,
       peak_events_per_sec: 0,
       event_count: 1
     };
@@ -681,6 +1024,7 @@ export class PatchlingsEngine {
       test_fail: 0,
       errors: 0,
       backpressure_dropped: 0,
+      backpressure_summaries: 0,
       peak_events_per_sec: 0,
       event_count: 0
     };
@@ -824,7 +1168,8 @@ export class PatchlingsEngine {
       backpressure: {
         dropped_low_value: chapter.backpressure_dropped,
         peak_events_per_sec: chapter.peak_events_per_sec,
-        threshold: this.eventsPerSecondThreshold
+        threshold: this.eventsPerSecondThreshold,
+        summaries_emitted: chapter.backpressure_summaries
       },
       ...(chapter.title ? { title: chapter.title } : {})
     };
@@ -860,6 +1205,21 @@ export class PatchlingsEngine {
   private ensureRunState(runId: string, ts: string): RunState {
     const existing = this.world.runs[runId];
     if (existing) {
+      const legacyLastSeq = typeof (existing as { last_seq?: number }).last_seq === "number"
+        ? (existing as { last_seq?: number }).last_seq
+        : -1;
+      if (typeof existing.last_upstream_seq !== "number") {
+        existing.last_upstream_seq = legacyLastSeq;
+      }
+      if (typeof existing.internal_seq !== "number") {
+        existing.internal_seq = Math.max(existing.event_count, existing.last_upstream_seq, INTERNAL_SEQ_OFFSET);
+      }
+      if (typeof existing.recording_index !== "number") {
+        existing.recording_index = 0;
+      }
+      if (typeof existing.recording_bytes !== "number") {
+        existing.recording_bytes = 0;
+      }
       existing.last_ts = ts;
       return existing;
     }
@@ -875,8 +1235,11 @@ export class PatchlingsEngine {
       dropped_low_value_events: 0,
       duplicate_events: 0,
       peak_events_per_sec: 0,
-      last_seq: -1,
-      last_ts: ts
+      last_upstream_seq: -1,
+      internal_seq: INTERNAL_SEQ_OFFSET,
+      last_ts: ts,
+      recording_index: 0,
+      recording_bytes: 0
     };
     this.world.runs[runId] = runState;
     return runState;
@@ -896,13 +1259,38 @@ export class PatchlingsEngine {
     await appendNdjson(this.chaptersPath, summary);
   }
 
-  private async recordEvent(event: TelemetryEventV1): Promise<void> {
-    if (this.storageMode !== "fs" || !this.recordingsDir) {
+  private recordingPath(runId: string, index: number): string | undefined {
+    if (!this.recordingsDir) {
+      return undefined;
+    }
+    const suffix = index <= 0 ? "" : `-${index}`;
+    return path.join(this.recordingsDir, `${runId}${suffix}.jsonl`);
+  }
+
+  private async recordEvent(event: TelemetryEventV1, runState: RunState): Promise<void> {
+    if (this.storageMode !== "fs") {
+      return;
+    }
+    if (!this.recordingsDir) {
       return;
     }
     await ensureDir(this.recordingsDir);
-    const filePath = path.join(this.recordingsDir, `${event.run_id}.ndjson`);
-    await appendNdjson(filePath, event);
+
+    const line = `${JSON.stringify(event)}\n`;
+    const lineBytes = Buffer.byteLength(line, "utf8");
+
+    if (runState.recording_bytes + lineBytes > this.maxRecordingBytes) {
+      runState.recording_index += 1;
+      runState.recording_bytes = 0;
+    }
+
+    const filePath = this.recordingPath(runState.run_id, runState.recording_index);
+    if (!filePath) {
+      return;
+    }
+
+    await fs.appendFile(filePath, line, "utf8");
+    runState.recording_bytes += lineBytes;
   }
 
   private async flushPendingWrites(): Promise<void> {

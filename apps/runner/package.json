@@ -11,6 +11,7 @@
     "@patchlings/adapters": "workspace:*",
     "@patchlings/engine": "workspace:*",
     "@patchlings/protocol": "workspace:*",
+    "@patchlings/storytime": "workspace:*",
     "ws": "^8.18.0"
   },
   "scripts": {
@@ -18,6 +19,7 @@
     "demo": "tsx src/cli.ts demo",
     "run": "tsx src/cli.ts run",
     "replay": "tsx src/cli.ts replay",
+    "export-story": "tsx src/cli.ts export-story",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

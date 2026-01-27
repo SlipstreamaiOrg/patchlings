@@ -20,10 +20,12 @@ export interface TelemetryEventV1 {
   v: 1;
   run_id: string;
   seq: number;
+  upstream_seq?: number;
   ts: string;
   kind: TelemetryKind;
   name: string;
   severity?: TelemetrySeverity;
+  internal?: boolean;
   attrs?: TelemetryAttrs;
   // Forward compatibility: additional fields are allowed and ignored by default.
   [key: string]: unknown;
@@ -109,6 +111,11 @@ export function validateTelemetryEventV1(input: unknown): TelemetryValidationRes
     errors.push("seq must be a non-negative integer");
   }
 
+  const upstreamSeq = input.upstream_seq;
+  if (upstreamSeq !== undefined && (!Number.isInteger(upstreamSeq) || upstreamSeq < 0)) {
+    errors.push("upstream_seq must be a non-negative integer when provided");
+  }
+
   const ts = input.ts;
   if (typeof ts !== "string" || !isIsoDateTime(ts)) {
     errors.push("ts must be an ISO date-time string");
@@ -132,6 +139,11 @@ export function validateTelemetryEventV1(input: unknown): TelemetryValidationRes
     errors.push("severity must be debug|info|warn|error when provided");
   }
 
+  const internal = input.internal;
+  if (internal !== undefined && typeof internal !== "boolean") {
+    errors.push("internal must be a boolean when provided");
+  }
+
   const attrs = validateAttrs(input.attrs, errors);
 
   if (errors.length > 0) {
@@ -143,10 +155,12 @@ export function validateTelemetryEventV1(input: unknown): TelemetryValidationRes
     v: TELEMETRY_VERSION,
     run_id: runId as string,
     seq: seq as number,
+    ...(upstreamSeq !== undefined ? { upstream_seq: upstreamSeq as number } : {}),
     ts: ts as string,
     kind: kind as TelemetryKind,
     name: name as string,
     ...(severity ? { severity: severity as TelemetrySeverity } : {}),
+    ...(internal !== undefined ? { internal: internal as boolean } : {}),
     ...(attrs ? { attrs } : {})
   };
 

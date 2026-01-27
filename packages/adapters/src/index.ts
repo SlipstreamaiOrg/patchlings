@@ -35,6 +35,7 @@ export interface FileTailAdapterOptions {
   context: AdapterContext;
   fromStart?: boolean;
   pollIntervalMs?: number;
+  endOnIdleMs?: number;
 }
 
 export interface DemoAdapterOptions {
@@ -73,7 +74,20 @@ const SAFE_ATTR_KEYS = new Set([
   "result",
   "error_code",
   "severity",
-  "level"
+  "level",
+  "thread_id",
+  "turn_id",
+  "item_id",
+  "item_kind",
+  "phase",
+  "upstream_type",
+  "upstream_seq_original",
+  "prompt_hash",
+  "source_kind",
+  "source_name",
+  "second",
+  "threshold",
+  "adapter"
 ]);
 
 type Primitive = string | number | boolean | null;
@@ -271,6 +285,233 @@ function coerceName(input: Record<string, unknown>): string {
   return "log.unknown";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function pickString(input: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function pickNumber(input: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function coerceRunIdFromRaw(raw: Record<string, unknown>, fallbackRunId: string): string {
+  return (
+    pickString(raw, ["run_id", "thread_id", "session_id", "runId", "threadId"]) ?? fallbackRunId
+  );
+}
+
+function codexPhaseFromType(type: string): string {
+  const lower = type.toLowerCase();
+  if (lower.includes("started")) return "start";
+  if (lower.includes("completed") || lower.includes("finished")) return "end";
+  if (lower.includes("failed") || lower.includes("error")) return "fail";
+  if (lower.includes("delta")) return "delta";
+  return "event";
+}
+
+function sanitizeToolName(input: string | undefined): string | undefined {
+  if (!input) {
+    return undefined;
+  }
+  const cleaned = input.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function getItemRecord(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  return isRecord(raw.item) ? raw.item : undefined;
+}
+
+function mapCodexItemEvent(type: string, raw: Record<string, unknown>, item: Record<string, unknown>): Record<string, unknown> {
+  const phase = codexPhaseFromType(type);
+  const itemKind = pickString(item, ["kind", "type", "category"]);
+  const itemKindLower = itemKind?.toLowerCase();
+  const toolName = sanitizeToolName(
+    pickString(item, ["tool_name", "tool", "toolName"]) ?? pickString(raw, ["tool_name", "tool"])
+  );
+  const filePath =
+    pickString(item, ["path", "file_path", "filename", "file", "target_path", "source_path"]) ??
+    pickString(raw, ["path", "file_path", "target_path", "source_path"]);
+  const result = pickString(item, ["result", "status", "outcome"]) ?? pickString(raw, ["result", "status"]);
+  const resultLower = result?.toLowerCase();
+
+  const extras: Record<string, unknown> = {
+    upstream_type: type,
+    phase
+  };
+
+  const itemId = pickString(item, ["id", "item_id", "itemId"]);
+  if (itemId) {
+    extras.item_id = itemId;
+  }
+  if (itemKind) {
+    extras.item_kind = itemKind;
+  }
+
+  const typeLower = type.toLowerCase();
+
+  const looksFileLike =
+    Boolean(filePath) || Boolean(itemKindLower?.includes("file")) || typeLower.includes("patch") || typeLower.includes("diff");
+  if (looksFileLike) {
+    const action =
+      typeLower.includes("delete") || itemKindLower?.includes("delete")
+        ? "delete"
+        : typeLower.includes("create") || itemKindLower?.includes("create")
+          ? "create"
+          : "write";
+    if (filePath) {
+      extras.path = filePath;
+    }
+    return {
+      ...extras,
+      kind: "file",
+      name: `file.${action}`
+    };
+  }
+
+  const looksToolLike =
+    Boolean(toolName) ||
+    Boolean(itemKindLower?.includes("tool")) ||
+    Boolean(itemKindLower?.includes("call")) ||
+    typeLower.includes("tool.");
+  if (looksToolLike) {
+    const safeTool = toolName ?? sanitizeToolName(itemKindLower) ?? "tool";
+    extras.tool_name = safeTool;
+    return {
+      ...extras,
+      kind: "tool",
+      name: `tool.${safeTool}.${phase}`
+    };
+  }
+
+  const looksTestLike = Boolean(itemKindLower?.includes("test")) || typeLower.includes("test");
+  if (looksTestLike) {
+    const testEvent =
+      resultLower?.includes("fail") || resultLower?.includes("error")
+        ? "fail"
+        : resultLower?.includes("pass") || resultLower?.includes("ok")
+          ? "pass"
+          : "run";
+    if (resultLower) {
+      extras.result = resultLower;
+    }
+    return {
+      ...extras,
+      kind: "test",
+      name: `test.${testEvent}`
+    };
+  }
+
+  const looksSpawnLike = Boolean(itemKindLower?.includes("spawn")) || typeLower.includes("spawn");
+  if (looksSpawnLike) {
+    return {
+      ...extras,
+      kind: "spawn",
+      name: `spawn.${phase}`
+    };
+  }
+
+  return {
+    ...extras,
+    kind: "log",
+    name: type
+  };
+}
+
+function mapCodexRawEvent(raw: Record<string, unknown>, prompt: string, context: AdapterContext): Record<string, unknown> {
+  const type = pickString(raw, ["type", "event", "name"]) ?? "log.codex.unknown";
+  const runId = coerceRunIdFromRaw(raw, context.runId);
+  const runSalt = resolveRunSalt(context, runId);
+  const phase = codexPhaseFromType(type);
+
+  const mapped: Record<string, unknown> = {
+    run_id: runId,
+    name: type,
+    upstream_type: type,
+    phase
+  };
+
+  const tsCandidate = raw.ts ?? raw.timestamp ?? raw.time;
+  if (typeof tsCandidate === "string" || typeof tsCandidate === "number") {
+    mapped.ts = tsCandidate;
+  }
+
+  const seqOriginal = pickNumber(raw, ["seq", "sequence", "index"]);
+  if (seqOriginal !== undefined) {
+    mapped.seq = seqOriginal;
+    mapped.upstream_seq_original = seqOriginal;
+  }
+
+  const threadId = pickString(raw, ["thread_id", "threadId"]);
+  if (threadId) {
+    mapped.thread_id = threadId;
+  }
+  const turnId = pickString(raw, ["turn_id", "turnId"]);
+  if (turnId) {
+    mapped.turn_id = turnId;
+  }
+
+  if (type.startsWith("error") || raw.error) {
+    mapped.kind = "error";
+    mapped.name = type.startsWith("error") ? type : "error.codex";
+    mapped.severity = "error";
+
+    const errorRecord = isRecord(raw.error) ? raw.error : undefined;
+    const errorMessage =
+      (errorRecord && pickString(errorRecord, ["message", "code", "type"])) ??
+      pickString(raw, ["error", "message"]);
+    if (errorMessage) {
+      mapped.error_code = hashWithSalt(errorMessage, runSalt);
+    }
+
+    return mapped;
+  }
+
+  if (type.startsWith("turn.")) {
+    mapped.kind = "turn";
+    mapped.name = type;
+    if (type === "turn.started" && prompt.trim().length > 0) {
+      mapped.prompt_hash = hashWithSalt(prompt, runSalt);
+    }
+    return mapped;
+  }
+
+  if (type.startsWith("thread.")) {
+    mapped.kind = "spawn";
+    mapped.name = type;
+    return mapped;
+  }
+
+  const item = getItemRecord(raw);
+  if (type.startsWith("item.") || item) {
+    const mappedItem = mapCodexItemEvent(type, raw, item ?? {});
+    return {
+      ...mapped,
+      ...mappedItem
+    };
+  }
+
+  return {
+    ...mapped,
+    kind: deriveKind(type, raw.kind),
+    name: type
+  };
+}
+
 function normalizeInputEvent(
   raw: Record<string, unknown>,
   context: AdapterContext,
@@ -289,6 +530,7 @@ function normalizeInputEvent(
     v: 1,
     run_id: runId,
     seq,
+    upstream_seq: seq,
     ts,
     kind,
     name,
@@ -325,6 +567,7 @@ function makeAdapterErrorEvent(
     v: 1,
     run_id: context.runId,
     seq,
+    upstream_seq: seq,
     ts: new Date().toISOString(),
     kind: "error",
     name: options.name,
@@ -351,6 +594,7 @@ function makeUnparsedLineEvent(
     v: 1,
     run_id: context.runId,
     seq,
+    upstream_seq: seq,
     ts: new Date().toISOString(),
     kind: "log",
     name: "log.unparsed_line",
@@ -416,7 +660,8 @@ export async function codexJsonlAdapter(options: CodexAdapterOptions): Promise<A
     (line) => {
       try {
         const raw = JSON.parse(line) as Record<string, unknown>;
-        const event = normalizeInputEvent(raw, context, seqSynth);
+        const mapped = mapCodexRawEvent(raw, prompt, context);
+        const event = normalizeInputEvent(mapped, context, seqSynth);
         if (event) {
           queue.push(event);
         }
@@ -515,6 +760,7 @@ export async function fileTailAdapter(options: FileTailAdapterOptions): Promise<
   const queue = new AsyncQueue<TelemetryEventV1>();
   const seqSynth = new SeqSynthesizer();
   const pollIntervalMs = options.pollIntervalMs ?? 250;
+  const endOnIdleMs = options.endOnIdleMs ?? (options.fromStart ? 1500 : undefined);
   const absolutePath = path.resolve(options.filePath);
 
   let position = 0;
@@ -522,37 +768,69 @@ export async function fileTailAdapter(options: FileTailAdapterOptions): Promise<
   position = options.fromStart ? 0 : initialStats.size;
 
   let remainder = "";
-  const interval = setInterval(async () => {
-    const stats = await statFile(absolutePath);
-    if (stats.size <= position) {
+  let lastActivity = Date.now();
+  let seenData = false;
+  let polling = false;
+
+  const handleLine = (line: string) => {
+    if (line.trim().length === 0) {
       return;
     }
-
-    const slice = await readFileSlice(absolutePath, position, stats.size);
-    position = stats.size;
-
-    const text = remainder + slice;
-    const lines = text.split(/\r?\n/);
-    remainder = lines.pop() ?? "";
-
-    for (const line of lines) {
-      if (line.trim().length === 0) {
-        continue;
+    try {
+      const raw = JSON.parse(line) as Record<string, unknown>;
+      const event = normalizeInputEvent(raw, options.context, seqSynth);
+      if (event) {
+        queue.push(event);
       }
-      try {
-        const raw = JSON.parse(line) as Record<string, unknown>;
-        const event = normalizeInputEvent(raw, options.context, seqSynth);
-        if (event) {
-          queue.push(event);
+    } catch (error) {
+      queue.push(makeUnparsedLineEvent(options.context, seqSynth, line));
+    }
+    seenData = true;
+    lastActivity = Date.now();
+  };
+
+  const flushRemainder = () => {
+    if (remainder.trim().length === 0) {
+      remainder = "";
+      return;
+    }
+    handleLine(remainder);
+    remainder = "";
+  };
+  const interval = setInterval(async () => {
+    if (polling) {
+      return;
+    }
+    polling = true;
+    try {
+      const stats = await statFile(absolutePath);
+      if (stats.size <= position) {
+        if (endOnIdleMs !== undefined && seenData && Date.now() - lastActivity >= endOnIdleMs) {
+          flushRemainder();
+          clearInterval(interval);
+          queue.close();
         }
-      } catch (error) {
-        queue.push(makeUnparsedLineEvent(options.context, seqSynth, line));
+        return;
       }
+
+      const slice = await readFileSlice(absolutePath, position, stats.size);
+      position = stats.size;
+
+      const text = remainder + slice;
+      const lines = text.split(/\r?\n/);
+      remainder = lines.pop() ?? "";
+
+      for (const line of lines) {
+        handleLine(line);
+      }
+    } finally {
+      polling = false;
     }
   }, pollIntervalMs);
 
   const stop = async () => {
     clearInterval(interval);
+    flushRemainder();
     queue.close();
   };
 

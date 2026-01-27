@@ -52,4 +52,21 @@ describe("TelemetryEventV1 validation", () => {
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.includes("attrs.nested"))).toBe(true);
   });
+
+  it("accepts upstream sequencing metadata for adapters and engine", () => {
+    const result = validateTelemetryEventV1({
+      v: 1,
+      run_id: "run-3",
+      seq: 10,
+      upstream_seq: 9,
+      internal: true,
+      ts: new Date("2026-01-01T00:00:10.000Z").toISOString(),
+      kind: "metric",
+      name: "metric.backpressure.summary"
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.value?.upstream_seq).toBe(9);
+    expect(result.value?.internal).toBe(true);
+  });
 });

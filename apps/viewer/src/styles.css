@@ -1,0 +1,335 @@
+:root {
+  color-scheme: dark;
+  --bg: #04060f;
+  --panel: rgba(12, 18, 36, 0.88);
+  --panel-border: rgba(120, 160, 255, 0.18);
+  --text: #e6edff;
+  --muted: #9aa8d6;
+  --accent: #7db4ff;
+  --accent-strong: #9bc8ff;
+  --success: #5bd18c;
+  --warn: #f3c969;
+  --error: #ff7a7a;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 20% -10%, #0a1030 0%, var(--bg) 60%);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+    "Segoe UI Emoji";
+}
+
+.app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.25rem;
+  padding: 1.25rem 1.75rem 1rem;
+  border-bottom: 1px solid var(--panel-border);
+  background: linear-gradient(180deg, rgba(18, 28, 60, 0.94), rgba(10, 16, 34, 0.9));
+}
+
+.topbar__title h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.6rem;
+  letter-spacing: 0.2px;
+}
+
+.topbar__title p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.topbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 1rem;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.canvas-panel {
+  position: relative;
+  min-height: 560px;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(4, 8, 20, 0.7);
+}
+
+.universe-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.universe-canvas canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 0;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 1rem 1.05rem;
+  box-shadow: 0 8px 24px rgba(6, 10, 28, 0.45);
+}
+
+.panel h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+.kv-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.kv-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+
+.kv-list strong {
+  color: var(--accent-strong);
+  font-weight: 600;
+  word-break: break-all;
+  text-align: right;
+}
+
+.chapter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: min(56vh, 560px);
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.chapter-card {
+  border: 1px solid rgba(140, 170, 255, 0.18);
+  border-radius: 12px;
+  padding: 0.65rem 0.7rem;
+  background: rgba(16, 26, 58, 0.76);
+}
+
+.chapter-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+  font-size: 0.98rem;
+}
+
+.chapter-card__meta {
+  margin: 0.1rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.chapter-card--completed {
+  border-color: rgba(91, 209, 140, 0.35);
+}
+
+.chapter-card--failed {
+  border-color: rgba(255, 122, 122, 0.5);
+}
+
+.chapter-card--interrupted {
+  border-color: rgba(243, 201, 105, 0.5);
+}
+
+.learnlings-panel {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  width: min(340px, 48%);
+  background: rgba(10, 18, 44, 0.86);
+  border: 1px solid rgba(130, 170, 255, 0.24);
+  border-radius: 14px;
+  padding: 0.75rem 0.85rem;
+  backdrop-filter: blur(4px);
+}
+
+.learnlings-panel h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.learnlings-panel__detail {
+  margin: 0.4rem 0 0;
+  color: var(--accent-strong);
+  font-size: 0.92rem;
+}
+
+.learnlings-list {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 0.2rem;
+}
+
+.learnlings-list li {
+  border: 1px solid rgba(130, 170, 255, 0.18);
+  border-radius: 10px;
+  padding: 0.45rem 0.55rem;
+  background: rgba(16, 28, 66, 0.72);
+}
+
+.learnlings-list__name {
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+
+.learnlings-list p {
+  margin: 0.2rem 0 0;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(140, 180, 255, 0.28);
+  background: rgba(14, 24, 52, 0.82);
+  font-size: 0.92rem;
+  text-transform: lowercase;
+}
+
+.status-pill--completed {
+  border-color: rgba(91, 209, 140, 0.5);
+}
+
+.status-pill--failed {
+  border-color: rgba(255, 122, 122, 0.6);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 6px rgba(243, 201, 105, 0.12);
+}
+
+.status-dot--connected {
+  background: var(--success);
+  box-shadow: 0 0 0 6px rgba(91, 209, 140, 0.12);
+}
+
+.status-dot--disconnected {
+  background: var(--error);
+  box-shadow: 0 0 0 6px rgba(255, 122, 122, 0.12);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.94rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+}
+
+.button {
+  appearance: none;
+  border: 1px solid rgba(140, 190, 255, 0.44);
+  background: linear-gradient(180deg, rgba(70, 120, 255, 0.24), rgba(40, 90, 220, 0.32));
+  color: var(--text);
+  padding: 0.45rem 0.8rem;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0.25rem 0 0;
+}
+
+.export-detail {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid rgba(120, 170, 255, 0.3);
+  background: rgba(28, 48, 92, 0.6);
+  color: var(--accent-strong);
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+@media (max-width: 1180px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    order: 2;
+  }
+
+  .canvas-panel {
+    order: 1;
+    min-height: 520px;
+  }
+}

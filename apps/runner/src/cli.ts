@@ -7,9 +7,10 @@ import type { TelemetryEventV1 } from "@patchlings/protocol";
 import type { ChapterSummary, WorldState } from "@patchlings/engine";
 import { PatchlingsEngine } from "@patchlings/engine";
 import { codexJsonlAdapter, demoAdapter, fileTailAdapter, stdinJsonlAdapter, type AdapterContext, type AdapterHandle } from "@patchlings/adapters";
+import { exportStoryTime } from "@patchlings/storytime";
 import { WebSocketServer, type WebSocket } from "ws";
 
-type RunnerCommand = "demo" | "run" | "replay" | "dev" | "stdin" | "help";
+type RunnerCommand = "demo" | "run" | "replay" | "dev" | "stdin" | "export-story" | "help";
 type RunStatus = "idle" | "running" | "completed" | "failed";
 
 type StreamMessage =
@@ -41,10 +42,19 @@ type StreamMessage =
       detail?: string;
     };
 
+type IngestResultLike = {
+  world: WorldState;
+  acceptedEvents: TelemetryEventV1[];
+  closedChapters: ChapterSummary[];
+  droppedLowValueEvents: number;
+  droppedDuplicateEvents: number;
+};
+
 interface RunnerOptions {
   command: RunnerCommand;
   prompt?: string;
   replayPath?: string;
+  exportRunId?: string;
   port: number;
 }
 
@@ -69,6 +79,11 @@ function parseCommand(argv: string[]): RunnerOptions {
     return { command, replayPath: rest[0], port };
   }
 
+  if (command === "export-story") {
+    const exportArgs = rest[0] === "--" ? rest.slice(1) : rest;
+    return { command, exportRunId: exportArgs[0], port };
+  }
+
   return { command, port };
 }
 
@@ -76,6 +91,52 @@ function makeRunId(prefix: string): string {
   const timePart = Date.now().toString(36);
   const randomPart = Math.random().toString(36).slice(2, 8);
   return `${prefix}-${timePart}-${randomPart}`;
+}
+
+function latestRunId(world: WorldState): string | null {
+  const runs = Object.values(world.runs);
+  if (runs.length === 0) {
+    return null;
+  }
+  runs.sort((a, b) => b.last_ts.localeCompare(a.last_ts));
+  return runs[0]?.run_id ?? null;
+}
+
+function resolveRunId(world: WorldState, requestedRunId?: string): string {
+  if (requestedRunId && requestedRunId !== "latest") {
+    if (!world.runs[requestedRunId]) {
+      throw new Error(`Run not found: ${requestedRunId}`);
+    }
+    return requestedRunId;
+  }
+
+  const runId = latestRunId(world);
+  if (!runId) {
+    throw new Error("No runs found. Run `pnpm demo` or `pnpm run -- \"prompt\"` first.");
+  }
+  return runId;
+}
+
+function resolveStoryPath(engine: PatchlingsEngine, runId: string): string {
+  return engine.getStoryPath(runId) ?? path.join(engine.getPatchlingsDir(), "story", `${runId}.md`);
+}
+
+async function exportStory(engine: PatchlingsEngine, requestedRunId?: string): Promise<{ runId: string; path: string }> {
+  const worldBefore = engine.getWorld();
+  const runId = resolveRunId(worldBefore, requestedRunId);
+
+  await engine.flushRunAggregates(runId);
+  const world = engine.getWorld();
+  const chapters = engine.getChaptersByRun(runId);
+  const storyPath = resolveStoryPath(engine, runId);
+  const result = await exportStoryTime({
+    runId,
+    chapters,
+    world,
+    outputPath: storyPath
+  });
+
+  return { runId, path: result.path };
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -143,7 +204,7 @@ function serveFallback(res: http.ServerResponse, viewerUrl: string): void {
     <main style="font-family: system-ui, sans-serif; padding: 2rem; max-width: 48rem; margin: 0 auto;">
       <h1>Patchlings Runner Is Live</h1>
       <p>The viewer build was not found at <code>apps/viewer/dist</code>.</p>
-      <p>Start the viewer dev server and open it directly:</p>
+      <p>Patchlings will try to start the viewer dev server automatically. If it is not running, start it manually:</p>
       <pre><code>pnpm --filter @patchlings/viewer dev
 ${viewerUrl}</code></pre>
       <p>The runner stream is available at <code>/stream</code> on this server.</p>
@@ -232,13 +293,15 @@ function startViewerDevServer(): { child: ReturnType<typeof spawn>; url: string 
 
 async function buildAdapterContext(engine: PatchlingsEngine, runId: string): Promise<AdapterContext> {
   const workspaceSalt = engine.getWorkspaceSalt();
-  const runSalt = engine.getRunSalt(runId);
+  const getRunSalt = (id: string) => engine.getRunSalt(id);
+  const runSalt = getRunSalt(runId);
   const allowContent = process.env.PATCHLINGS_ALLOW_CONTENT === "true";
   return {
     runId,
     workspaceSalt,
     runSalt,
-    allowContent
+    allowContent,
+    getRunSalt
   };
 }
 
@@ -257,7 +320,12 @@ async function selectAdapter(engine: PatchlingsEngine, options: RunnerOptions, r
     if (!options.replayPath) {
       throw new Error("Missing replay path. Usage: patchlings replay <path>");
     }
-    return fileTailAdapter({ filePath: options.replayPath, context, fromStart: true });
+    return fileTailAdapter({
+      filePath: options.replayPath,
+      context,
+      fromStart: true,
+      endOnIdleMs: 2000
+    });
   }
 
   if (options.command === "run") {
@@ -275,21 +343,41 @@ async function main(): Promise<void> {
   const options = parseCommand(process.argv);
 
   if (options.command === "help") {
-    console.log("Patchlings commands: demo | dev | run -- \"prompt\" | replay <path> | stdin");
+    console.log(
+      "Patchlings commands: demo | dev | run -- \"prompt\" | replay <path> | stdin | export-story <run_id|latest>"
+    );
     return;
   }
 
   const workspaceRoot = process.cwd();
   const engine = await PatchlingsEngine.create({ workspaceRoot });
 
+  if (options.command === "export-story") {
+    try {
+      const result = await exportStory(engine, options.exportRunId);
+      console.log(`Story Time exported for run ${result.runId}`);
+      console.log(`  ${result.path}`);
+      console.log("Commands:");
+      console.log("  pnpm demo");
+      console.log('  pnpm run -- "Your prompt here"');
+      console.log("  pnpm export-story -- latest");
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : "Failed to export story.");
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const runId = makeRunId(options.command === "run" ? "codex" : options.command);
+  let activeRunId = runId;
+  const observedRunIds = new Set<string>([runId]);
   let status: RunStatus = "idle";
 
   const viewerDist = path.join(workspaceRoot, "apps", "viewer", "dist");
   const hasViewerDist = await pathExists(viewerDist);
 
   let viewerDev: { child: ReturnType<typeof spawn>; url: string } | undefined;
-  if (options.command === "dev") {
+  if (!hasViewerDist) {
     viewerDev = startViewerDevServer();
   }
 
@@ -301,13 +389,26 @@ async function main(): Promise<void> {
 
     if (urlPath === "/health") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: true, status, runId }));
+      res.end(JSON.stringify({ ok: true, status, runId: activeRunId }));
       return;
     }
 
     if (urlPath === "/export/storytime") {
-      res.writeHead(501, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ ok: false, error: "Story Time exporter not wired yet." }));
+      try {
+        const url = new URL(req.url ?? "/export/storytime", `http://localhost:${options.port}`);
+        const requestedRunId = url.searchParams.get("runId") ?? undefined;
+        const result = await exportStory(engine, requestedRunId);
+        res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: true, runId: result.runId, path: result.path }));
+      } catch (error) {
+        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+        res.end(
+          JSON.stringify({
+            ok: false,
+            error: error instanceof Error ? error.message : "Failed to export story."
+          })
+        );
+      }
       return;
     }
 
@@ -343,7 +444,7 @@ async function main(): Promise<void> {
       world: engine.getWorld(),
       chapters: engine.getChapters(),
       status,
-      runId,
+      runId: activeRunId,
       viewerUrl,
       patchlingsDir: engine.getPatchlingsDir()
     };
@@ -359,6 +460,34 @@ async function main(): Promise<void> {
   let processing = false;
   let adapterDone = false;
 
+  const updateRunTracking = (events: TelemetryEventV1[]) => {
+    for (const event of events) {
+      observedRunIds.add(event.run_id);
+      activeRunId = event.run_id;
+    }
+  };
+
+  const broadcastBatch = (result: IngestResultLike) => {
+    updateRunTracking(result.acceptedEvents);
+    status = updateStatusFromEvents(status, result.acceptedEvents);
+
+    const message: StreamMessage = {
+      type: "batch",
+      world: result.world,
+      events: result.acceptedEvents,
+      closedChapters: result.closedChapters,
+      stats: {
+        droppedLowValueEvents: result.droppedLowValueEvents,
+        droppedDuplicateEvents: result.droppedDuplicateEvents,
+        droppedQueueEvents,
+        queueSize: queue.length
+      }
+    };
+
+    broadcast(clients, message);
+    droppedQueueEvents = 0;
+  };
+
   const processQueue = async (): Promise<void> => {
     if (processing) {
       return;
@@ -368,31 +497,27 @@ async function main(): Promise<void> {
       while (queue.length > 0) {
         const batch = queue.splice(0, BATCH_SIZE);
         const result = await engine.ingestBatch(batch);
-        status = updateStatusFromEvents(status, result.acceptedEvents);
-
-        const message: StreamMessage = {
-          type: "batch",
-          world: result.world,
-          events: result.acceptedEvents,
-          closedChapters: result.closedChapters,
-          stats: {
-            droppedLowValueEvents: result.droppedLowValueEvents,
-            droppedDuplicateEvents: result.droppedDuplicateEvents,
-            droppedQueueEvents,
-            queueSize: queue.length
-          }
-        };
-
-        broadcast(clients, message);
-        droppedQueueEvents = 0;
+        broadcastBatch(result);
       }
 
       if (adapterDone && status === "running") {
         status = "completed";
-        broadcast(clients, { type: "status", status, runId, detail: "Adapter stream ended." });
+        broadcast(clients, {
+          type: "status",
+          status,
+          runId: activeRunId,
+          detail: "Adapter stream ended."
+        });
       }
     } finally {
       processing = false;
+    }
+  };
+
+  const drainQueue = async () => {
+    while (processing || queue.length > 0) {
+      await processQueue();
+      await new Promise((resolve) => setTimeout(resolve, BATCH_INTERVAL_MS));
     }
   };
 
@@ -409,13 +534,23 @@ async function main(): Promise<void> {
         droppedQueueEvents += trimQueue(queue);
       }
       adapterDone = true;
+      await drainQueue();
+
+      for (const observedRunId of [...observedRunIds]) {
+        const flushResult = await engine.flushRunAggregates(observedRunId);
+        if (flushResult.acceptedEvents.length > 0 || flushResult.closedChapters.length > 0) {
+          broadcastBatch(flushResult);
+        }
+      }
+
       await processQueue();
+      await drainQueue();
     } catch (error) {
       status = "failed";
       broadcast(clients, {
         type: "status",
         status,
-        runId,
+        runId: activeRunId,
         detail: error instanceof Error ? error.message : "Adapter failed"
       });
     }
@@ -434,7 +569,8 @@ async function main(): Promise<void> {
     console.log("Commands:");
     console.log("  pnpm demo");
     console.log('  pnpm run -- "Your prompt here"');
-    console.log("  pnpm replay -- path/to/recording.ndjson");
+    console.log("  pnpm replay -- path/to/recording.jsonl");
+    console.log("  pnpm export-story -- latest");
   });
 
   const shutdown = async () => {
