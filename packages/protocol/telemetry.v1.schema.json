@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://patchlings.dev/schemas/telemetry.v1.schema.json",
+  "title": "Patchlings Telemetry Event v1",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "v": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 0 },
+    "ts": { "type": "string", "format": "date-time" },
+    "kind": {
+      "type": "string",
+      "enum": ["turn", "tool", "file", "git", "test", "spawn", "log", "error", "metric"]
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "severity": {
+      "type": "string",
+      "enum": ["debug", "info", "warn", "error"]
+    },
+    "attrs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean", "null"]
+      }
+    }
+  },
+  "required": ["v", "run_id", "seq", "ts", "kind", "name"]
+}

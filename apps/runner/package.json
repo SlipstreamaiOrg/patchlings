@@ -1,0 +1,26 @@
+{
+  "name": "@patchlings/runner",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/cli.js",
+  "types": "dist/cli.d.ts",
+  "bin": {
+    "patchlings": "dist/cli.js"
+  },
+  "dependencies": {
+    "@patchlings/adapters": "workspace:*",
+    "@patchlings/engine": "workspace:*",
+    "@patchlings/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts dev",
+    "demo": "tsx src/cli.ts demo",
+    "run": "tsx src/cli.ts run",
+    "replay": "tsx src/cli.ts replay",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "echo \"No lint configured for @patchlings/runner\""
+  }
+}
