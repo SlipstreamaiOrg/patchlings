@@ -6,6 +6,16 @@ The built-in theme is:
 
 - Patchlings: Universe (default)
 
+## Universe Viewer (PixiJS Colony)
+
+In v0.1, the Universe theme is implemented as a PixiJS top-down colony simulation. It still consumes `{ world, events, chapters }` from the runner, but renders through a simulation layer instead of a pure JSON render state.
+
+Asset conventions:
+
+- Canonical asset root: `patchling_characters/patchlings_branding_images/`
+- Runner asset route: `/patchlings-assets`
+- Viewer asset base override: `VITE_PATCHLINGS_ASSET_BASE`
+
 ## Theme Interface
 
 Themes live in `packages/themes` today, but the interface is designed so theme packs can be published independently later.
@@ -51,8 +61,8 @@ export const myTheme: Theme = {
 - Expect identifiers to be hashed
 - Cap entity counts to protect frame time
 - Treat themes as pure reducers
+- Prefer metadata-driven visuals that remain safe under redaction
 
 ## Learn-lings Overlay
 
 Learn-lings is a UI overlay driven by event mappings. It is not baked into a theme and can be toggled independently.
-

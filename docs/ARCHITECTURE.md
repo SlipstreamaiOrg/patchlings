@@ -10,7 +10,7 @@ Patchlings is an engine plus themes. The runner bridges upstream event streams i
 4. Redaction strips sensitive keys and hashes identifiers by salt
 5. Engine reduces events into persistent world state plus chapters
 6. Runner batches and streams updates to the viewer over `/stream`
-7. Themes reduce world state into render state for the UI
+7. Viewer consumes world state plus events and renders the PixiJS Universe simulation
 
 ## Chapter Semantics (Locked)
 
@@ -49,3 +49,12 @@ A theme consumes:
 
 It produces a render state for the viewer. The built-in `Universe` theme focuses on clarity and stability first, then aesthetics.
 
+## Viewer Rendering (v0.1)
+
+The current viewer implements the Universe theme as a PixiJS colony simulation. It connects only to runner endpoints:
+
+- `/stream`
+- `/export/storytime`
+- `/patchlings-assets/*`
+
+By default, sprite assets are served from `patchling_characters/patchlings_branding_images/`.
