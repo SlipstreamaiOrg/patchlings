@@ -23,6 +23,7 @@
     "run": "tsx src/cli.ts run",
     "replay": "tsx src/cli.ts replay",
     "export-story": "tsx src/cli.ts export-story",
+    "assets": "tsx src/cli.ts assets",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",

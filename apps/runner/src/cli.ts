@@ -3,14 +3,22 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
-import type { TelemetryEventV1 } from "@patchlings/protocol";
+import { DEFAULT_PATCHLINGS_ASSET_ROOT, type TelemetryEventV1 } from "@patchlings/protocol";
 import type { ChapterSummary, WorldState } from "@patchlings/engine";
 import { PatchlingsEngine } from "@patchlings/engine";
 import { codexJsonlAdapter, demoAdapter, fileTailAdapter, stdinJsonlAdapter, type AdapterContext, type AdapterHandle } from "@patchlings/adapters";
 import { exportStoryTime } from "@patchlings/storytime";
 import { WebSocketServer, type WebSocket } from "ws";
 
-type RunnerCommand = "demo" | "run" | "replay" | "dev" | "stdin" | "export-story" | "help";
+type RunnerCommand =
+  | "demo"
+  | "run"
+  | "replay"
+  | "dev"
+  | "stdin"
+  | "export-story"
+  | "assets-doctor"
+  | "help";
 type RunStatus = "idle" | "running" | "completed" | "failed";
 
 type StreamMessage =
@@ -65,10 +73,7 @@ const BATCH_INTERVAL_MS = 50;
 const BATCH_SIZE = 250;
 const MAX_QUEUE_SIZE = 5000;
 const RECENT_EVENTS_LIMIT = 600;
-const DEFAULT_ASSETS_RELATIVE_DIR = path.join(
-  "patchling_characters",
-  "patchlings_branding_images"
-);
+const DEFAULT_ASSET_ROOT = DEFAULT_PATCHLINGS_ASSET_ROOT;
 const PATCHLINGS_ASSET_ROUTE = "/patchlings-assets";
 
 function stripLeadingDoubleDash(args: string[]): string[] {
@@ -81,8 +86,21 @@ function stripLeadingDoubleDash(args: string[]): string[] {
 
 function parseCommand(argv: string[]): RunnerOptions {
   const [, , rawCommand, ...rest] = argv;
-  const command = (rawCommand ?? "demo") as RunnerCommand;
+  const normalizedCommand = (rawCommand ?? "demo").toLowerCase();
+  const normalizedArgs = rest.map((value) => value.toLowerCase());
+  let command = normalizedCommand as RunnerCommand;
   const port = Number(process.env.PATCHLINGS_PORT ?? DEFAULT_PORT);
+
+  if (
+    (normalizedCommand === "assets" && normalizedArgs[0] === "doctor") ||
+    (normalizedCommand === "doctor" && normalizedArgs[0] === "assets")
+  ) {
+    return { command: "assets-doctor", port };
+  }
+
+  if (normalizedCommand === "assets" || normalizedCommand === "doctor") {
+    return { command: "help", port };
+  }
 
   if (command === "run") {
     const promptArgs = stripLeadingDoubleDash(rest);
@@ -165,6 +183,22 @@ async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
+function resolveAssetRoot(workspaceRoot: string): { root: string; source: "default" | "env" | "legacy" } {
+  const override = process.env.PATCHLINGS_ASSET_ROOT?.trim();
+  if (override) {
+    const resolved = path.isAbsolute(override) ? override : path.resolve(workspaceRoot, override);
+    return { root: resolved, source: "env" };
+  }
+
+  const legacy = process.env.PATCHLINGS_ASSETS_DIR?.trim();
+  if (legacy) {
+    const resolved = path.isAbsolute(legacy) ? legacy : path.resolve(workspaceRoot, legacy);
+    return { root: resolved, source: "legacy" };
+  }
+
+  return { root: path.join(workspaceRoot, DEFAULT_ASSET_ROOT), source: "default" };
+}
+
 interface AssetSanityResult {
   rootExists: boolean;
   sheetsExists: boolean;
@@ -189,6 +223,92 @@ async function checkAssetSanity(assetsDir: string): Promise<AssetSanityResult> {
     sheetsDir,
     spritesDir
   };
+}
+
+const REQUIRED_SHEET_FILES = [
+  "patchling_idle_sheet_128.png",
+  "patchling_walk_sheet_128.png",
+  "patchling_carry_sheet_128.png"
+];
+
+const FRAME_FILE_PATTERN = /^patchling_(idle|walk|carry)_[SENW]_\d{2}_(256|128|64)\.png$/;
+
+async function findMatchingFrames(framesDir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(framesDir);
+    return entries.filter((entry) => FRAME_FILE_PATTERN.test(entry));
+  } catch (error) {
+    return [];
+  }
+}
+
+async function checkRequiredSheets(sheetsDir: string): Promise<{ found: string[]; missing: string[] }> {
+  const results = await Promise.all(
+    REQUIRED_SHEET_FILES.map(async (file) => {
+      const fullPath = path.join(sheetsDir, file);
+      return (await pathExists(fullPath)) ? { file, missing: false } : { file, missing: true };
+    })
+  );
+
+  const found: string[] = [];
+  const missing: string[] = [];
+  for (const result of results) {
+    if (result.missing) {
+      missing.push(result.file);
+    } else {
+      found.push(result.file);
+    }
+  }
+
+  return { found, missing };
+}
+
+async function runAssetDoctor(
+  assetsRoot: string
+): Promise<{
+  ok: boolean;
+  sheets: { found: string[]; missing: string[] };
+  frames: { matches: string[] };
+  missingPaths: string[];
+}> {
+  const sheetsDir = path.join(assetsRoot, "sprites_v1", "sheets");
+  const spritesDir = path.join(assetsRoot, "sprites_v1", "sprites");
+
+  const [rootExists, sheetsExists, spritesExists] = await Promise.all([
+    pathExists(assetsRoot),
+    pathExists(sheetsDir),
+    pathExists(spritesDir)
+  ]);
+
+  const missingPaths: string[] = [];
+  if (!rootExists) {
+    missingPaths.push(assetsRoot);
+  }
+  if (!sheetsExists) {
+    missingPaths.push(sheetsDir);
+  }
+  if (!spritesExists) {
+    missingPaths.push(spritesDir);
+  }
+
+  const sheetsReport = sheetsExists ? await checkRequiredSheets(sheetsDir) : { found: [], missing: REQUIRED_SHEET_FILES };
+  const frameMatches = spritesExists ? await findMatchingFrames(spritesDir) : [];
+
+  const sheetsOk = sheetsReport.found.length === REQUIRED_SHEET_FILES.length;
+  const framesOk = frameMatches.length > 0;
+  const ok = sheetsOk || framesOk;
+
+  if (!sheetsOk) {
+    for (const file of sheetsReport.missing) {
+      missingPaths.push(path.join(sheetsDir, file));
+    }
+  }
+
+  if (!framesOk && spritesExists) {
+    missingPaths.push(path.join(spritesDir, "patchling_<action>_<dir>_<frame>_<size>.png"));
+  }
+
+  return { ok, sheets: sheetsReport, frames: { matches: frameMatches }, missingPaths };
 }
 
 async function serveAssets(
@@ -461,16 +581,50 @@ async function main(): Promise<void> {
 
   if (options.command === "help") {
     console.log(
-      "Patchlings commands: demo | dev | run -- \"prompt\" | replay <path> | stdin | export-story <run_id|latest>"
+      "Patchlings commands: demo | dev | run -- \"prompt\" | replay <path> | stdin | export-story <run_id|latest> | assets doctor | doctor assets"
     );
     return;
   }
 
   const workspaceRoot = await findWorkspaceRoot(process.cwd());
+  const { root: assetsDir, source: assetRootSource } = resolveAssetRoot(workspaceRoot);
+
+  if (assetRootSource === "legacy") {
+    console.warn(
+      "[patchlings] PATCHLINGS_ASSETS_DIR is deprecated. Use PATCHLINGS_ASSET_ROOT instead."
+    );
+  }
+
+  if (options.command === "assets-doctor") {
+    const report = await runAssetDoctor(assetsDir);
+    const sheetsOk = report.sheets.missing.length === 0;
+    const framesOk = report.frames.matches.length > 0;
+    console.log("Patchlings Asset Doctor");
+    console.log(`Asset root: ${assetsDir}`);
+    console.log(
+      sheetsOk
+        ? `✅ Found sheets (${report.sheets.found.length}/${REQUIRED_SHEET_FILES.length})`
+        : `⚠️ Missing sheets (${report.sheets.missing.length} missing)`
+    );
+    console.log(
+      framesOk
+        ? `✅ Found frames (${report.frames.matches.length} matches)`
+        : "⚠️ Missing frames (no matching files found)"
+    );
+    if (!report.ok) {
+      console.log("⚠️ Missing assets -> placeholder mode");
+    }
+    if (report.missingPaths.length > 0) {
+      console.log("Missing paths:");
+      for (const missing of report.missingPaths) {
+        console.log(`  - ${missing}`);
+      }
+    }
+    process.exitCode = report.ok ? 0 : 1;
+    return;
+  }
+
   const engine = await PatchlingsEngine.create({ workspaceRoot });
-  const assetsDir = process.env.PATCHLINGS_ASSETS_DIR
-    ? path.resolve(process.env.PATCHLINGS_ASSETS_DIR)
-    : path.join(workspaceRoot, DEFAULT_ASSETS_RELATIVE_DIR);
   const assetSanity = await checkAssetSanity(assetsDir);
 
   if (!assetSanity.rootExists) {
@@ -479,7 +633,7 @@ async function main(): Promise<void> {
       `[patchlings] Expected asset root: ${assetsDir}`
     );
     console.warn(
-      "[patchlings] Place assets under patchling_characters/patchlings_branding_images/ or set PATCHLINGS_ASSETS_DIR."
+      `[patchlings] Place assets under ${DEFAULT_ASSET_ROOT} or set PATCHLINGS_ASSET_ROOT.`
     );
   } else {
     console.log(`[patchlings] Asset root: ${assetsDir}`);
@@ -501,6 +655,7 @@ async function main(): Promise<void> {
       console.log("  pnpm demo");
       console.log('  pnpm run -- "Your prompt here"');
       console.log("  pnpm export-story -- latest");
+      console.log("  pnpm assets doctor");
     } catch (error) {
       console.error(error instanceof Error ? error.message : "Failed to export story.");
       process.exitCode = 1;
@@ -723,6 +878,7 @@ async function main(): Promise<void> {
     console.log('  pnpm run -- "Your prompt here"');
     console.log("  pnpm replay -- path/to/recording.jsonl");
     console.log("  pnpm export-story -- latest");
+    console.log("  pnpm assets doctor");
   });
 
   const shutdown = async () => {

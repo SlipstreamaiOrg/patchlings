@@ -57,4 +57,9 @@ The current viewer implements the Universe theme as a PixiJS colony simulation. 
 - `/export/storytime`
 - `/patchlings-assets/*`
 
-By default, sprite assets are served from `patchling_characters/patchlings_branding_images/`.
+By default, sprite assets are served from `patchling_characters/patchlings_branding_images/` (the canonical asset root).
+
+The loader order is:
+1. Sprite sheets (preferred for performance)
+2. Individual frames
+3. Placeholder mode (with explicit console warnings)
