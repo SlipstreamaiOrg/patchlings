@@ -98,6 +98,7 @@ interface Agent {
   animKey: string;
   pos: Vec2;
   targetPos: Vec2;
+  nextWanderAt: number;
   speed: number;
   payload: "none" | "block";
   jobId: string | undefined;
@@ -741,6 +742,12 @@ export class ColonySimulation {
     };
   }
 
+  private scheduleAgentWander(agent: Agent, now: number): void {
+    const minDelay = 900;
+    const maxDelay = 2400;
+    agent.nextWanderAt = now + minDelay + Math.random() * (maxDelay - minDelay);
+  }
+
   private updateAgentDirection(agent: Agent): void {
     const dx = agent.targetPos.x - agent.pos.x;
     const dy = agent.targetPos.y - agent.pos.y;
@@ -818,8 +825,13 @@ export class ColonySimulation {
 
   private refreshAgentSprites(): void {
     for (const agent of this.agents.values()) {
-      agent.container.removeChild(agent.sprite);
-      agent.sprite.destroy();
+      if (agent.sprite.parent === agent.container) {
+        agent.container.removeChild(agent.sprite);
+      }
+      if (!agent.sprite.destroyed) {
+        agent.sprite.stop();
+        agent.sprite.destroy({ children: true, texture: false, baseTexture: false });
+      }
       agent.sprite = this.createAgentSprite();
       agent.animState = "walk";
       agent.animDir = agent.animDir === "S" ? "N" : "S";
@@ -887,6 +899,7 @@ export class ColonySimulation {
       animKey: "",
       pos: { ...spawnPos },
       targetPos: this.randomAround(base, 180),
+      nextWanderAt: Date.now() + 1200 + Math.random() * 1200,
       speed: 96,
       payload: "none",
       jobId: undefined,
@@ -1335,7 +1348,7 @@ export class ColonySimulation {
       const job = agent.jobId ? this.jobsById.get(agent.jobId) : undefined;
       if (!job || job.step === "done") {
         agent.jobId = undefined;
-        this.updateAgentIdle(agent, dt, speedFactor);
+        this.updateAgentIdle(agent, now, dt, speedFactor);
         continue;
       }
       this.updateAgentJob(agent, job, now, dt, speedFactor, completedJobIds);
@@ -1347,12 +1360,13 @@ export class ColonySimulation {
     this.recomputeGateAssignments();
   }
 
-  private updateAgentIdle(agent: Agent, dt: number, speedFactor: number): void {
+  private updateAgentIdle(agent: Agent, now: number, dt: number, speedFactor: number): void {
     const anchor = this.anchorPointForAgent(agent);
     const stepDistance = agent.speed * dt * speedFactor * 0.55;
     const toTarget = distance(agent.pos, agent.targetPos);
-    if (toTarget < 10) {
-      agent.targetPos = this.randomAround(anchor, 200);
+    if (toTarget < 12 || now >= agent.nextWanderAt) {
+      agent.targetPos = this.randomAround(anchor, 220);
+      this.scheduleAgentWander(agent, now);
     }
     const shouldMove = distance(agent.pos, agent.targetPos) > 14;
     if (!shouldMove) {
@@ -1408,7 +1422,7 @@ export class ColonySimulation {
       case "done":
       default: {
         agent.jobId = undefined;
-        this.updateAgentIdle(agent, dt, speedFactor);
+        this.updateAgentIdle(agent, now, dt, speedFactor);
         break;
       }
     }
@@ -1508,6 +1522,7 @@ export class ColonySimulation {
     this.setAgentState(agent, "idle", "none");
     const anchor = this.anchorPointForAgent(agent);
     agent.targetPos = this.randomAround(anchor, 200);
+    this.scheduleAgentWander(agent, now);
     agent.container.position.set(agent.pos.x, agent.pos.y);
   }
 

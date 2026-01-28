@@ -42,6 +42,7 @@ export interface DemoAdapterOptions {
   context: AdapterContext;
   ratePerSecond?: number;
   totalTurns?: number;
+  loop?: boolean;
   burstEveryTurns?: number;
   burstSize?: number;
   failureRate?: number;
@@ -854,12 +855,14 @@ export async function demoAdapter(options: DemoAdapterOptions): Promise<AdapterH
   const seqSynth = new SeqSynthesizer();
   const ratePerSecond = options.ratePerSecond ?? 20;
   const totalTurns = options.totalTurns ?? 4;
+  const loop = options.loop ?? false;
   const burstEveryTurns = options.burstEveryTurns ?? 2;
   const burstSize = options.burstSize ?? 40;
   const failureRate = options.failureRate ?? 0.15;
 
   let stopped = false;
   const baseTs = Date.now();
+  let turnCounter = 0;
 
   const emit = (raw: Record<string, unknown>) => {
     const event = normalizeInputEvent(raw, options.context, seqSynth);
@@ -872,67 +875,74 @@ export async function demoAdapter(options: DemoAdapterOptions): Promise<AdapterH
     const tickMs = Math.max(1, Math.floor(1000 / ratePerSecond));
     let offset = 0;
 
-    for (let turn = 1; turn <= totalTurns && !stopped; turn += 1) {
-      emit({
-        ts: demoTs(baseTs, offset),
-        kind: "turn",
-        name: "turn.started",
-        label: `Turn ${turn}`
-      });
-      offset += tickMs;
-
-      const toolCalls = 3 + (turn % 3);
-      for (let toolIndex = 0; toolIndex < toolCalls && !stopped; toolIndex += 1) {
+    do {
+      for (let turn = 1; turn <= totalTurns && !stopped; turn += 1) {
+        turnCounter += 1;
         emit({
           ts: demoTs(baseTs, offset),
-          kind: "tool",
-          name: "tool.shell.start",
-          tool_name: toolIndex % 2 === 0 ? "shell" : "apply_patch",
-          duration_ms: 20 + toolIndex * 5
+          kind: "turn",
+          name: "turn.started",
+          label: `Turn ${turnCounter}`
+        });
+        offset += tickMs;
+
+        const toolCalls = 3 + (turnCounter % 3);
+        for (let toolIndex = 0; toolIndex < toolCalls && !stopped; toolIndex += 1) {
+          emit({
+            ts: demoTs(baseTs, offset),
+            kind: "tool",
+            name: "tool.shell.start",
+            tool_name: toolIndex % 2 === 0 ? "shell" : "apply_patch",
+            duration_ms: 20 + toolIndex * 5
+          });
+          offset += tickMs;
+
+          emit({
+            ts: demoTs(baseTs, offset),
+            kind: "file",
+            name: "file.write",
+            path: `src/module-${turnCounter}-${toolIndex}.ts`,
+            lines: 10 + toolIndex
+          });
+          offset += tickMs;
+        }
+
+        const burst = turnCounter % burstEveryTurns === 0 ? burstSize : 0;
+        for (let i = 0; i < burst && !stopped; i += 1) {
+          emit({
+            ts: demoTs(baseTs, offset),
+            kind: "log",
+            name: "log.progress",
+            severity: "debug",
+            message: `burst-${turnCounter}-${i}`
+          });
+          offset += tickMs;
+        }
+
+        const testFailed = Math.random() < failureRate;
+        emit({
+          ts: demoTs(baseTs, offset),
+          kind: "test",
+          name: testFailed ? "test.fail" : "test.pass",
+          result: testFailed ? "fail" : "pass",
+          count: 12 + turnCounter
         });
         offset += tickMs;
 
         emit({
           ts: demoTs(baseTs, offset),
-          kind: "file",
-          name: "file.write",
-          path: `src/module-${turn}-${toolIndex}.ts`,
-          lines: 10 + toolIndex
+          kind: "turn",
+          name: testFailed ? "turn.failed" : "turn.completed"
         });
-        offset += tickMs;
+        offset += tickMs * 2;
+
+        await sleep(Math.min(200, tickMs * 4));
       }
 
-      const burst = turn % burstEveryTurns === 0 ? burstSize : 0;
-      for (let i = 0; i < burst && !stopped; i += 1) {
-        emit({
-          ts: demoTs(baseTs, offset),
-          kind: "log",
-          name: "log.progress",
-          severity: "debug",
-          message: `burst-${turn}-${i}`
-        });
-        offset += tickMs;
+      if (loop && !stopped) {
+        await sleep(Math.min(800, tickMs * 8));
       }
-
-      const testFailed = Math.random() < failureRate;
-      emit({
-        ts: demoTs(baseTs, offset),
-        kind: "test",
-        name: testFailed ? "test.fail" : "test.pass",
-        result: testFailed ? "fail" : "pass",
-        count: 12 + turn
-      });
-      offset += tickMs;
-
-      emit({
-        ts: demoTs(baseTs, offset),
-        kind: "turn",
-        name: testFailed ? "turn.failed" : "turn.completed"
-      });
-      offset += tickMs * 2;
-
-      await sleep(Math.min(200, tickMs * 4));
-    }
+    } while (loop && !stopped);
 
     queue.close();
   };

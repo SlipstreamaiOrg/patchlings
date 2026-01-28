@@ -546,7 +546,7 @@ async function selectAdapter(engine: PatchlingsEngine, options: RunnerOptions, r
   const context = await buildAdapterContext(engine, runId);
 
   if (options.command === "demo" || options.command === "dev") {
-    return demoAdapter({ context });
+    return demoAdapter({ context, loop: true });
   }
 
   if (options.command === "stdin") {
