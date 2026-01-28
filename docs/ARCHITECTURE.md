@@ -12,6 +12,13 @@ Patchlings is an engine plus themes. The runner bridges upstream event streams i
 6. Runner batches and streams updates to the viewer over `/stream`
 7. Viewer consumes world state plus events and renders the PixiJS Universe simulation
 
+## Telemetry v1 Contract (Stability)
+
+Telemetry v1 is a public contract. Breaking changes must:
+
+- Bump the protocol version (`v`) and update the schema and TypeScript types.
+- Include a migration note in docs and release notes so downstream consumers can adapt.
+
 ## Chapter Semantics (Locked)
 
 - A chapter opens on `turn.started`
