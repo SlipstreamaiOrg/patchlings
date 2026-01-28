@@ -63,6 +63,14 @@ export const myTheme: Theme = {
 - Treat themes as pure reducers
 - Prefer metadata-driven visuals that remain safe under redaction
 
+## Example Theme Pack Plan (Upcoming)
+
+We plan to publish a small, standalone example theme pack to demonstrate the theme API in practice. The initial pack will:
+
+- Export a single theme with a minimal reducer and a tiny asset bundle.
+- Document setup steps (install, register, run) without requiring any code changes in Patchlings.
+- Serve as a reference for performance caps and privacy-safe rendering.
+
 ## Learn-lings Overlay
 
 Learn-lings is a UI overlay driven by event mappings. It is not baked into a theme and can be toggled independently.
