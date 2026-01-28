@@ -19,6 +19,9 @@ export default defineConfig({
       },
       "/health": {
         target: RUNNER_TARGET
+      },
+      "/patchlings-assets": {
+        target: RUNNER_TARGET
       }
     }
   },

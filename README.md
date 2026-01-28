@@ -7,20 +7,20 @@ Patchlings is an engine plus themes. It is repo-agnostic and can visualize any c
 ## 30-Second Quickstart
 
 ```bash
-npm install -g pnpm
-pnpm install
-pnpm demo
+npx pnpm@9.12.0 install
+npx pnpm@9.12.0 demo
 ```
 
 Open the viewer at:
 
 - `http://localhost:5173` (Vite dev server)
 - The runner streams at `http://localhost:4317/stream`
+- Runner-served assets live under `http://localhost:4317/patchlings-assets/`
 
 ## Run With Codex CLI
 
 ```bash
-pnpm run -- "Refactor the telemetry adapter to add backpressure summaries."
+npx pnpm@9.12.0 run -- "Refactor the telemetry adapter to add backpressure summaries."
 ```
 
 Then open `http://localhost:5173`.
@@ -30,6 +30,14 @@ Patchlings will ingest Codex JSONL from:
 ```bash
 codex exec --json "<prompt>"
 ```
+
+## Sprite Assets (Optional)
+
+Place Patchling sprites under:
+
+- `patchling_characters/patchlings_branding_images/`
+
+The runner serves them at `/patchlings-assets` by default. Override with `PATCHLINGS_ASSETS_DIR` (runner) or `VITE_PATCHLINGS_ASSET_BASE` (viewer). If assets are missing, the viewer falls back to placeholder Patchlings.
 
 ## Replay A Recording
 
@@ -97,4 +105,3 @@ See `CONTRIBUTING.md`.
 ## License
 
 MIT, see `LICENSE`.
-

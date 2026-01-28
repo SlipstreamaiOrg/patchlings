@@ -19,6 +19,7 @@ export type StreamMessage =
       runId: string;
       viewerUrl: string;
       patchlingsDir: string;
+      events?: TelemetryEventV1[];
     }
   | {
       type: "batch";

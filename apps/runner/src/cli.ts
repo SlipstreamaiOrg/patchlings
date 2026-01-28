@@ -22,6 +22,7 @@ type StreamMessage =
       runId: string;
       viewerUrl: string;
       patchlingsDir: string;
+      events?: TelemetryEventV1[];
     }
   | {
       type: "batch";
@@ -63,6 +64,12 @@ const VIEWER_DEV_PORT = 5173;
 const BATCH_INTERVAL_MS = 50;
 const BATCH_SIZE = 250;
 const MAX_QUEUE_SIZE = 5000;
+const RECENT_EVENTS_LIMIT = 600;
+const DEFAULT_ASSETS_RELATIVE_DIR = path.join(
+  "patchling_characters",
+  "patchlings_branding_images"
+);
+const PATCHLINGS_ASSET_ROUTE = "/patchlings-assets";
 
 function stripLeadingDoubleDash(args: string[]): string[] {
   let index = 0;
@@ -155,6 +162,79 @@ async function pathExists(targetPath: string): Promise<boolean> {
     return true;
   } catch (error) {
     return false;
+  }
+}
+
+interface AssetSanityResult {
+  rootExists: boolean;
+  sheetsExists: boolean;
+  spritesExists: boolean;
+  sheetsDir: string;
+  spritesDir: string;
+}
+
+async function checkAssetSanity(assetsDir: string): Promise<AssetSanityResult> {
+  const sheetsDir = path.join(assetsDir, "sprites_v1", "sheets");
+  const spritesDir = path.join(assetsDir, "sprites_v1", "sprites");
+  const [rootExists, sheetsExists, spritesExists] = await Promise.all([
+    pathExists(assetsDir),
+    pathExists(sheetsDir),
+    pathExists(spritesDir)
+  ]);
+
+  return {
+    rootExists,
+    sheetsExists,
+    spritesExists,
+    sheetsDir,
+    spritesDir
+  };
+}
+
+async function serveAssets(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  assetsDir: string,
+  routePrefix: string
+): Promise<boolean> {
+  const rawUrl = req.url ?? routePrefix;
+  const urlPath = rawUrl.split("?")[0] ?? routePrefix;
+  const prefix = `${routePrefix}/`;
+  const relativePath = urlPath.startsWith(prefix) ? urlPath.slice(prefix.length) : "";
+
+  if (!relativePath) {
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    res.end(
+      JSON.stringify({
+        ok: true,
+        assetsDir
+      })
+    );
+    return true;
+  }
+
+  const targetPath = path.resolve(assetsDir, relativePath);
+  if (!targetPath.startsWith(assetsDir)) {
+    res.writeHead(403).end("Forbidden");
+    return true;
+  }
+
+  if (!(await pathExists(targetPath))) {
+    res.writeHead(404).end("Asset not found");
+    return true;
+  }
+
+  try {
+    const content = await fs.readFile(targetPath);
+    res.writeHead(200, {
+      "content-type": contentTypeFor(targetPath),
+      "cache-control": "no-store"
+    });
+    res.end(content);
+    return true;
+  } catch (error) {
+    res.writeHead(500).end("Failed to read asset.");
+    return true;
   }
 }
 
@@ -305,6 +385,14 @@ function trimQueue(queue: TelemetryEventV1[]): number {
   return dropped;
 }
 
+function appendRecentEvents(prev: TelemetryEventV1[], events: TelemetryEventV1[]): TelemetryEventV1[] {
+  if (events.length === 0) {
+    return prev;
+  }
+  const next = [...prev, ...events];
+  return next.length > RECENT_EVENTS_LIMIT ? next.slice(next.length - RECENT_EVENTS_LIMIT) : next;
+}
+
 function startViewerDevServer(workspaceRoot: string): { child: ReturnType<typeof spawn>; url: string } {
   const url = `http://localhost:${VIEWER_DEV_PORT}`;
   const child = spawn(
@@ -380,6 +468,29 @@ async function main(): Promise<void> {
 
   const workspaceRoot = await findWorkspaceRoot(process.cwd());
   const engine = await PatchlingsEngine.create({ workspaceRoot });
+  const assetsDir = process.env.PATCHLINGS_ASSETS_DIR
+    ? path.resolve(process.env.PATCHLINGS_ASSETS_DIR)
+    : path.join(workspaceRoot, DEFAULT_ASSETS_RELATIVE_DIR);
+  const assetSanity = await checkAssetSanity(assetsDir);
+
+  if (!assetSanity.rootExists) {
+    console.warn("[patchlings] Sprite assets not found.");
+    console.warn(
+      `[patchlings] Expected asset root: ${assetsDir}`
+    );
+    console.warn(
+      "[patchlings] Place assets under patchling_characters/patchlings_branding_images/ or set PATCHLINGS_ASSETS_DIR."
+    );
+  } else {
+    console.log(`[patchlings] Asset root: ${assetsDir}`);
+    console.log(`[patchlings] Asset route: ${PATCHLINGS_ASSET_ROUTE}`);
+    if (!assetSanity.sheetsExists) {
+      console.warn(`[patchlings] Sprite sheets missing: ${assetSanity.sheetsDir}`);
+    }
+    if (!assetSanity.spritesExists) {
+      console.warn(`[patchlings] Individual sprite frames missing: ${assetSanity.spritesDir}`);
+    }
+  }
 
   if (options.command === "export-story") {
     try {
@@ -441,6 +552,13 @@ async function main(): Promise<void> {
       return;
     }
 
+    if (urlPath === PATCHLINGS_ASSET_ROUTE || urlPath.startsWith(`${PATCHLINGS_ASSET_ROUTE}/`)) {
+      const served = await serveAssets(req, res, assetsDir, PATCHLINGS_ASSET_ROUTE);
+      if (served) {
+        return;
+      }
+    }
+
     res.setHeader("access-control-allow-origin", "*");
 
     if (hasViewerDist) {
@@ -466,10 +584,12 @@ async function main(): Promise<void> {
     });
   });
 
+  let recentEvents: TelemetryEventV1[] = [];
+
   wss.on("connection", (ws: WebSocket) => {
     clients.add(ws);
-    const snapshot: StreamMessage = {
-      type: "snapshot",
+    const baseSnapshot = {
+      type: "snapshot" as const,
       world: engine.getWorld(),
       chapters: engine.getChapters(),
       status,
@@ -477,6 +597,8 @@ async function main(): Promise<void> {
       viewerUrl,
       patchlingsDir: engine.getPatchlingsDir()
     };
+    const snapshot: StreamMessage =
+      recentEvents.length > 0 ? { ...baseSnapshot, events: recentEvents } : baseSnapshot;
     ws.send(JSON.stringify(snapshot));
 
     ws.on("close", () => {
@@ -499,6 +621,7 @@ async function main(): Promise<void> {
   const broadcastBatch = (result: IngestResultLike) => {
     updateRunTracking(result.acceptedEvents);
     status = updateStatusFromEvents(status, result.acceptedEvents);
+    recentEvents = appendRecentEvents(recentEvents, result.acceptedEvents);
 
     const message: StreamMessage = {
       type: "batch",

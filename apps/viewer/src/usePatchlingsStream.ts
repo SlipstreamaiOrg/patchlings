@@ -62,6 +62,7 @@ function appendRecentEvents(prev: TelemetryEventV1[], events: TelemetryEventV1[]
 
 function reduceMessage(state: ViewerState, message: StreamMessage): ViewerState {
   if (message.type === "snapshot") {
+    const snapshotEvents = message.events ?? [];
     return {
       ...state,
       connected: true,
@@ -71,6 +72,7 @@ function reduceMessage(state: ViewerState, message: StreamMessage): ViewerState 
       patchlingsDir: message.patchlingsDir,
       world: message.world,
       chapters: message.chapters,
+      recentEvents: appendRecentEvents([], snapshotEvents),
       lastDetail: null
     };
   }
