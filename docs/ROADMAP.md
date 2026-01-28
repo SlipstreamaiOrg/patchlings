@@ -20,5 +20,4 @@ This roadmap is intentionally biased toward correctness, privacy, and determinis
 - Adapter plugin API and external agent examples
 - Recording browser and deterministic replay tooling
 - Theme pack publishing guide and theme registry
-- Release process (semver, changelog, versioned docs)
-
+- Release process (see docs/RELEASE.md)
