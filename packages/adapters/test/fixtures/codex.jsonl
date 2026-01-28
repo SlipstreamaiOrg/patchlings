@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"thread-1","ts":"2026-01-01T00:00:00.000Z"}
+{"type":"turn.started","thread_id":"thread-1","turn_id":"turn-1","ts":"2026-01-01T00:00:01.000Z","seq":1}
+{"type":"item.patch","thread_id":"thread-1","item":{"id":"item-1","type":"file","path":"src/index.ts"},"ts":"2026-01-01T00:00:02.000Z","seq":2}
+{"type":"item.tool.started","thread_id":"thread-1","item":{"id":"item-2","tool_name":"shell"},"ts":"2026-01-01T00:00:03.000Z","seq":3}
+{"type":"item.test","thread_id":"thread-1","item":{"id":"item-3","kind":"test","result":"pass"},"ts":"2026-01-01T00:00:04.000Z","seq":4}
+{"type":"error","thread_id":"thread-1","error":{"message":"boom"},"ts":"2026-01-01T00:00:05.000Z","seq":5}
