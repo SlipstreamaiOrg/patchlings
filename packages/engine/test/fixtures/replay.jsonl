@@ -1,0 +1,6 @@
+{"v":1,"run_id":"run-fixture","seq":0,"ts":"2026-01-01T00:00:00.000Z","kind":"turn","name":"turn.started","attrs":{"label":"Turn 1"}}
+{"v":1,"run_id":"run-fixture","seq":1,"ts":"2026-01-01T00:00:01.000Z","kind":"tool","name":"tool.shell.start","attrs":{"tool_name":"shell"}}
+{"v":1,"run_id":"run-fixture","seq":2,"ts":"2026-01-01T00:00:02.000Z","kind":"file","name":"file.write","attrs":{"path":"src/demo.ts"}}
+{"v":1,"run_id":"run-fixture","seq":3,"ts":"2026-01-01T00:00:03.000Z","kind":"log","name":"log.progress","severity":"debug","attrs":{"message":"tick"}}
+{"v":1,"run_id":"run-fixture","seq":4,"ts":"2026-01-01T00:00:04.000Z","kind":"test","name":"test.pass","attrs":{"count":3}}
+{"v":1,"run_id":"run-fixture","seq":5,"ts":"2026-01-01T00:00:05.000Z","kind":"turn","name":"turn.completed"}
