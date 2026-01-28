@@ -946,3 +946,13 @@ export async function demoAdapter(options: DemoAdapterOptions): Promise<AdapterH
 
   return { stream: queue, stop };
 }
+
+// Expose minimal helpers for adapter unit tests without changing runtime behavior.
+export const __test__ = {
+  mapCodexRawEvent,
+  mapCodexItemEvent,
+  normalizeInputEvent,
+  coerceRunIdFromRaw,
+  deriveKind,
+  SeqSynthesizer
+};
